@@ -1,0 +1,113 @@
+{
+  "providers": [
+    {
+      "id": "ollama",
+      "name": "Ollama (Local)",
+      "type": "local",
+      "free_tier": true,
+      "free_reality": "Verified free: no registration, no card, no rate limits (requires local RAM).",
+      "base_url": "http://127.0.0.1:11434",
+      "auth_url": "https://ollama.com/download",
+      "env_var": "OLLAMA_HOST",
+      "notes": "100% private & free offline models (Llama, Qwen, DeepSeek, Gemma, Mistral, etc.)."
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "type": "cloud",
+      "free_tier": true,
+      "free_reality": "Verified free: key works without a card for :free models, subject to per-minute/day rate limits (429).",
+      "base_url": "https://openrouter.ai/api/v1",
+      "auth_url": "https://openrouter.ai/keys",
+      "env_var": "OPENROUTER_API_KEY",
+      "notes": "Single key for 100+ models including :free tier models."
+    },
+    {
+      "id": "nvidia",
+      "name": "NVIDIA NIM",
+      "type": "cloud",
+      "free_tier": true,
+      "free_reality": "Verified free: developer credits after NVIDIA account registration; speed/limits vary by model.",
+      "base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "auth_url": "https://build.nvidia.com",
+      "env_var": "NVIDIA_API_KEY",
+      "notes": "Free developer credits for Nemotron / Llama / DeepSeek."
+    },
+    {
+      "id": "lmstudio",
+      "name": "LM Studio (Local)",
+      "type": "local",
+      "free_tier": true,
+      "free_reality": "Free local GUI runner: no card or registration (requires local RAM).",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "auth_url": "https://lmstudio.ai",
+      "env_var": "LM_STUDIO_HOST",
+      "notes": "Local OpenAI-compatible GUI runner."
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode Free Models",
+      "type": "cloud",
+      "free_tier": true,
+      "free_reality": "Limited: requires separate opencode CLI and frequently hits 429 rate limits.",
+      "auth_url": "https://opencode.ai",
+      "env_var": "OPENCODE_API_KEY",
+      "notes": "Free models: deepseek-v4.1-flash-free, glm-5.3-flash-free, big-pickle."
+    },
+    {
+      "id": "gemini",
+      "name": "Google AI Studio (Gemini)",
+      "type": "cloud",
+      "free_tier": true,
+      "free_reality": "Restricted: strict RPM/TPM limits, some regions/accounts require billing, free tier may log prompts.",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "auth_url": "https://aistudio.google.com/apikey",
+      "env_var": "GEMINI_API_KEY",
+      "notes": "Gemini Flash / Pro API."
+    },
+    {
+      "id": "groq",
+      "name": "Groq",
+      "type": "cloud",
+      "free_tier": true,
+      "free_reality": "Restricted: very tight tokens-per-minute cap; hits 429 quickly on code or long prompts.",
+      "base_url": "https://api.groq.com/openai/v1",
+      "auth_url": "https://console.groq.com/keys",
+      "env_var": "GROQ_API_KEY",
+      "notes": "Fast inference with tight free-tier caps."
+    },
+    {
+      "id": "github",
+      "name": "GitHub Models",
+      "type": "cloud",
+      "free_tier": true,
+      "free_reality": "Restricted: low daily request cap and small context window; only for small tests.",
+      "base_url": "https://models.inference.ai.azure.com",
+      "auth_url": "https://github.com/marketplace/models",
+      "env_var": "GITHUB_TOKEN",
+      "notes": "Access via GitHub Personal Access Token."
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic (Claude)",
+      "type": "cloud",
+      "free_tier": false,
+      "free_reality": "Paid only: requires credit card and prepaid balance.",
+      "base_url": "https://api.anthropic.com",
+      "auth_url": "https://console.anthropic.com/settings/keys",
+      "env_var": "ANTHROPIC_API_KEY",
+      "notes": "Paid API for Claude."
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "type": "cloud",
+      "free_tier": false,
+      "free_reality": "Paid only: requires credit card and prepaid balance.",
+      "base_url": "https://api.openai.com/v1",
+      "auth_url": "https://platform.openai.com/api-keys",
+      "env_var": "OPENAI_API_KEY",
+      "notes": "Paid API for GPT / o-series."
+    }
+  ]
+}

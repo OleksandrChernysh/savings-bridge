@@ -12,7 +12,8 @@ Instead of spending your expensive primary model on every small task (translatio
 
 - **It stays in place and works the same way.** Nothing is removed or disabled.
 - **Complex work stays with your primary model.** Architecture, critical decisions, complex coding, and final verification are still handled by it.
-- **Routine tasks go to the background assistant.** Everyday text chat, summaries, translations, drafts, simple code snippets, and Git commit messages run for free.
+- **Routine tasks go to the background assistant.** Everyday text chat, summaries, translations, drafts, isolated code modules (≥40 lines), tests, and Git commits run for free; tiny micro-edits (≤15 lines) stay in your primary model to avoid orchestration overhead.
+- **Built-in anti-ping-pong safeguards.** `local_bridge.py code` auto-resolves relative imports into context, runs compiler/syntax `--check` by default, retries fixes locally with type context, and rolls back broken writes on failure so your primary model never wastes tokens cleaning up errors.
 - **Your passwords and private data stay safe.** If a prompt or file contains passwords, keys, or `.env`, the system blocks sending it to external free services — such data is processed only locally on your machine or by your primary model.
 
 ---
@@ -21,7 +22,7 @@ Instead of spending your expensive primary model on every small task (translatio
 
 Running `python3 setup.py` installs only lightweight text scripts (no heavy apps or external Python packages):
 
-1. **Assistant scripts** in `~/.gemini/bin/` (`local_bridge.py`, `token_stats.py`, `cli_meter.py`, `metrics_server.py`, `model_discovery.py`) and an agent instruction file in `~/.gemini/antigravity/skills/local-coder/`.
+1. **Assistant scripts** in `~/.gemini/bin/` (`local_bridge.py`, `token_stats.py`, `cli_meter.py`, `metrics_server.py`, `model_discovery.py`) and agent instruction files (`skills/local-coder/SKILL.md`) for **Gemini / Antigravity** (`~/.gemini/antigravity/skills/local-coder/`), **Claude Code** (`~/.claude/skills/local-coder/`, when `~/.claude/` exists), and **ChatGPT / Codex CLI** (`~/.codex/skills/local-coder/`, when `~/.codex/` exists).
 2. **Local key manager (`secrets.env`)** in `~/.config/savings-bridge/secrets.env` with access restricted to your user only (`chmod 600` on macOS/Linux). It stores API keys for any cloud providers you choose to connect (you can skip this step if you only use local models).
 3. **Computer hardware profile** in `~/.config/savings-bridge/models.json` — the list of detected local models and settings automatically tuned to your RAM.
 4. **Savings log** in `~/.gemini/antigravity/local_tokens.jsonl` — records every saved token.
@@ -36,7 +37,7 @@ Running `python3 setup.py` installs only lightweight text scripts (no heavy apps
 | **Model Discovery** (`model_discovery.py`) | Checks your computer hardware and available local models | No need to guess technical model names or whether your laptop has enough memory | RAM size, CPU architecture, local Ollama (`:11434`) and LM Studio (`:1234`) ports | Operating system (macOS, Linux, Windows), best models for text vs code, or a pull suggestion if none are installed |
 | **Setup Wizard** (`setup.py`) | Runs a quick 1–2 minute guided setup | Easy to set up on a new laptop or share with friends | `providers.json`, local ports, keys you enter | OS paths, key file permissions, and safe `.bak` backups before updating existing files |
 | **Text Assistant** (`local_bridge.py ask`) | Answers text prompts, translates, summarizes, and writes drafts | Saves paid tokens on everyday chat and writing | Prompt text, attached context files, `models.json` profile | Which free or local model to use, and whether the text contains private keys |
-| **Code Assistant** (`local_bridge.py code`, `review`, `git-commit`, `parse-json`) | Writes simple functions and tests, extracts JSON from text, drafts Git commits | Offloads routine work from your primary model | Target files, Git history, language config files | How to auto-check code for errors after writing (`tsc`, `swiftc`, `py_compile`, `php -l`) |
+| **Code Assistant** (`local_bridge.py code`, `review`, `git-commit`, `parse-json`) | Writes functions and tests, extracts JSON from text, drafts Git commits | Offloads routine work without token ping-pong | Target files, auto-resolved local imports, Git history, language config | Auto-attaches imported local types, runs `--check` (`tsc`, `swiftc`, `py_compile`, `php -l`), auto-repairs, and rolls back on failure |
 | **Secret Guard** (`Zero-Secrets Guard`) | Scans text and filenames before sending to external free services | Prevents accidental leaks of passwords and API keys | Filenames (`.env`, `.pem`, `.key`) and prompt contents | Tokens, keys, and passwords; blocks external free models if detected |
 | **Savings Meter** (`token_stats.py`, `metrics_server.py`) | Counts spent vs saved tokens and serves stats to terminal, browser, or widgets | Clearly shows how many tokens you saved over the last day, week, or month | `local_tokens.jsonl` log and agent conversation transcripts | Savings % split between text/chat and code, plus live local runner status |
 

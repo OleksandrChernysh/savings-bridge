@@ -677,12 +677,73 @@ def check_scope_limits(model: str, prompt: str, existing: str, context_contents:
     return None
 
 
+_TS_IMPORT_RE = re.compile(r"""(?:import\s+.*?\s+from\s+|require\s*\(\s*)['"](\.\.?/[^'"]+)['"]""")
+_PY_IMPORT_RE = re.compile(r"""^\s*from\s+(\.[A-Za-z0-9_.]*)\s+import\s+""", re.MULTILINE)
+
+
+def resolve_local_imports(
+    base_file: str,
+    source_text: str,
+    already_included: set[str],
+    max_extra_chars: int,
+) -> list[tuple[str, str]]:
+    """Auto-resolve relative local imports from source_text within remaining char budget."""
+    if not base_file or not source_text or max_extra_chars <= 0:
+        return []
+    base_dir = os.path.dirname(os.path.abspath(base_file))
+    candidates: list[str] = []
+
+    for rel in _TS_IMPORT_RE.findall(source_text):
+        raw_path = os.path.normpath(os.path.join(base_dir, rel))
+        if os.path.isfile(raw_path):
+            candidates.append(raw_path)
+        else:
+            for ext in (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"):
+                p = raw_path + ext
+                if os.path.isfile(p):
+                    candidates.append(p)
+                    break
+
+    for mod in _PY_IMPORT_RE.findall(source_text):
+        dots = len(mod) - len(mod.lstrip("."))
+        rel_mod = mod[dots:].replace(".", os.sep)
+        parent = base_dir
+        for _ in range(max(0, dots - 1)):
+            parent = os.path.dirname(parent)
+        base_mod = os.path.join(parent, rel_mod) if rel_mod else parent
+        for p in (base_mod + ".py", os.path.join(base_mod, "__init__.py")):
+            if os.path.isfile(p):
+                candidates.append(p)
+                break
+
+    resolved: list[tuple[str, str]] = []
+    used_chars = 0
+    for cand in candidates:
+        abs_p = os.path.abspath(cand)
+        if abs_p in already_included or any(pat.search(abs_p) for pat in SENSITIVE_FILENAME_PATTERNS):
+            continue
+        try:
+            with open(abs_p, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception:
+            continue
+        if used_chars + len(text) > max_extra_chars:
+            continue
+        already_included.add(abs_p)
+        used_chars += len(text)
+        resolved.append((cand, text))
+    return resolved
+
+
 def handle_code(args):
     prompt_parts = []
     existing = ""
     context_contents: list[str] = []
+    context_blocks: list[str] = []
+    included_abs: set[str] = set()
 
     if args.file and os.path.exists(args.file):
+        included_abs.add(os.path.abspath(args.file))
         with open(args.file, "r", encoding="utf-8") as f:
             existing = f.read()
         label = "Existing file to append to" if args.append else "Existing file content"
@@ -691,16 +752,31 @@ def handle_code(args):
     if args.context:
         for ctx_file in args.context:
             if os.path.exists(ctx_file):
+                included_abs.add(os.path.abspath(ctx_file))
                 with open(ctx_file, "r", encoding="utf-8") as f:
                     ctx_text = f.read()
                     context_contents.append(ctx_text)
-                    prompt_parts.append(f"Context from {ctx_file}:\n```\n{ctx_text}\n```")
+                    block = f"Context from {ctx_file}:\n```\n{ctx_text}\n```"
+                    context_blocks.append(block)
+                    prompt_parts.append(block)
             else:
                 print(f"Warning: context file not found: {ctx_file}", file=sys.stderr)
 
     model = resolve_model(args.model, DEFAULT_CODER_MODEL)
+    auto_ctx_paths: list[str] = []
+    if not getattr(args, "no_auto_context", False) and existing and args.file:
+        limits = _resolve_scope_limits(model)
+        used = len(existing) + sum(len(c) for c in context_contents)
+        budget = max(0, int(limits["max_total_chars"] * 0.85) - used)
+        for imp_path, imp_text in resolve_local_imports(args.file, existing, included_abs, budget):
+            auto_ctx_paths.append(imp_path)
+            context_contents.append(imp_text)
+            block = f"Auto-imported context ({imp_path}):\n```\n{imp_text}\n```"
+            context_blocks.append(block)
+            prompt_parts.append(block)
+
     if model.startswith(FREE_CLOUD_PREFIXES):
-        checked_paths = [p for p in ([args.file, args.out] + (args.context or [])) if p]
+        checked_paths = [p for p in ([args.file, args.out] + (args.context or []) + auto_ctx_paths) if p]
         secret_err = detect_secrets(checked_paths, [args.prompt, existing] + context_contents)
         if secret_err:
             print(
@@ -758,10 +834,15 @@ def handle_code(args):
             )
             sys.exit(2)
 
-    os.makedirs(os.path.dirname(os.path.abspath(target_file)), exist_ok=True)
-    if args.append and os.path.exists(target_file):
+    had_target = os.path.exists(target_file)
+    orig_target = ""
+    if had_target:
         with open(target_file, "r", encoding="utf-8") as f:
-            current = f.read().rstrip()
+            orig_target = f.read()
+
+    os.makedirs(os.path.dirname(os.path.abspath(target_file)), exist_ok=True)
+    if args.append and had_target:
+        current = orig_target.rstrip()
         combined = f"{current}\n\n{clean_code}" if current else clean_code
         with open(target_file, "w", encoding="utf-8") as f:
             f.write(combined)
@@ -774,6 +855,7 @@ def handle_code(args):
     if args.tsc or args.check or args.verify:
         rc, err_out = run_verify(args.verify, args.tsc, target_file, check=args.check)
         retries_left = args.retries
+        ctx_section = ("\n\n".join(context_blocks)[:16000] + "\n\n") if context_blocks else ""
         while rc != 0 and retries_left > 0:
             retries_left -= 1
             repair_model = DEFAULT_CODER_MODEL if model == DEFAULT_PARSER_MODEL else model
@@ -785,6 +867,7 @@ def handle_code(args):
                 broken_content = f.read()
             repair_prompt = (
                 f"Original task:\n{args.prompt}\n\n"
+                f"{ctx_section}"
                 f"Current file content ({target_file}):\n```\n{broken_content}\n```\n\n"
                 f"Verification errors:\n{err_out[:4000]}\n\n"
                 "Fix all errors and output ONLY the complete corrected raw code for the file."
@@ -802,6 +885,21 @@ def handle_code(args):
                 f.write(repaired_clean)
             rc, err_out = run_verify(args.verify, args.tsc, target_file, check=args.check)
         if rc != 0:
+            if not getattr(args, "no_rollback", False):
+                failed_tmp = f"{target_file}.failed.tmp"
+                with open(target_file, "r", encoding="utf-8") as f:
+                    failed_content = f.read()
+                with open(failed_tmp, "w", encoding="utf-8") as f:
+                    f.write(failed_content)
+                if had_target:
+                    with open(target_file, "w", encoding="utf-8") as f:
+                        f.write(orig_target)
+                elif os.path.exists(target_file):
+                    os.remove(target_file)
+                print(
+                    f"Verification failed after retries; rolled back {target_file} (failed output saved to {failed_tmp}).",
+                    file=sys.stderr,
+                )
             sys.exit(rc)
 
 
@@ -1087,7 +1185,10 @@ def main():
     p_code.add_argument("--dry-run", action="store_true", help="Print generated code to stdout without writing file")
     p_code.add_argument("--force", action="store_true", help="Bypass truncation/placeholder guard on overwrite")
     p_code.add_argument("--tsc", action="store_true", help="Run npx tsc --noEmit from nearest tsconfig.json after writing")
-    p_code.add_argument("--check", action="store_true", help="Run language-appropriate compiler/syntax check (TS, Swift, PHP, Python) after writing")
+    p_code.add_argument("--check", dest="check", action="store_true", default=True, help="Run language-appropriate compiler/syntax check (default: enabled)")
+    p_code.add_argument("--no-check", dest="check", action="store_false", help="Skip automatic compiler/syntax check")
+    p_code.add_argument("--no-auto-context", action="store_true", help="Disable auto-resolving relative imports from --file")
+    p_code.add_argument("--no-rollback", action="store_true", help="Keep failed output in target file instead of rolling back on verify failure")
     p_code.add_argument("--verify", help="Custom verification command to run after writing")
     p_code.add_argument("--retries", type=int, default=1, help="Auto-repair retries on --tsc/--verify failure (default: 1, escalates 7b->14b)")
     p_code.set_defaults(func=handle_code)

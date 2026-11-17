@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Antigravity & Local LLM Token Usage Analytics
-Compares Gemini cloud token consumption vs Local Ollama token generation.
+Savings Bridge Token Usage Analytics
+Compares primary cloud token consumption vs local & free-cloud token generation.
 """
 
 import os
 import glob
 import json
 import argparse
+from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
@@ -15,11 +16,11 @@ TRANSCRIPT_GLOB = os.path.expanduser("~/.gemini/antigravity/brain/*/.system_gene
 LOCAL_LOG_PATH = os.path.expanduser("~/.gemini/antigravity/local_tokens.jsonl")
 
 
-def load_gemini_stats(days_limit: int):
+def load_cloud_stats(days_limit: int):
     daily = defaultdict(lambda: {"inp": 0, "out": 0, "cache": 0, "steps": 0, "convs": set()})
     
     for path in glob.glob(TRANSCRIPT_GLOB):
-        conv_id = path.split("/")[-4]
+        conv_id = Path(path).parts[-4]
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -47,6 +48,9 @@ def load_gemini_stats(days_limit: int):
             pass
 
     return daily
+
+
+load_gemini_stats = load_cloud_stats
 
 
 def load_local_stats():
@@ -82,7 +86,7 @@ def load_local_stats():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Token Savings & Usage Tracker")
+    parser = argparse.ArgumentParser(description="Savings Bridge Token Savings & Usage Tracker")
     parser.add_argument("--days", "-d", type=int, default=None, help="Number of days to show (default: 10)")
     parser.add_argument(
         "--period",
@@ -95,22 +99,22 @@ def main():
     period_map = {"day": 1, "week": 7, "month": 30}
     days = period_map[args.period] if args.period else (args.days if args.days is not None else 10)
 
-    gemini_stats = load_gemini_stats(days)
+    cloud_stats = load_cloud_stats(days)
     local_stats = load_local_stats()
 
-    all_days = sorted(set(list(gemini_stats.keys()) + list(local_stats.keys())))
+    all_days = sorted(set(list(cloud_stats.keys()) + list(local_stats.keys())))
     if days and len(all_days) > days:
         all_days = all_days[-days:]
 
     print("\n" + "=" * 98)
-    print("                  ANTIGRAVITY TOKEN CONSUMPTION & LOCAL SAVINGS REPORT")
+    print("                  SAVINGS BRIDGE TOKEN CONSUMPTION & LOCAL SAVINGS REPORT")
     print("=" * 98)
     
     header = (
         f"{'Date':<10} | "
-        f"{'Gemini Inp':>12} | "
-        f"{'Gemini Out':>11} | "
-        f"{'Gemini Tot':>12} | "
+        f"{'Cloud Inp':>12} | "
+        f"{'Cloud Out':>11} | "
+        f"{'Cloud Tot':>12} | "
         f"{'Local Calls':>11} | "
         f"{'Local Out (Free)':>16} | "
         f"{'Saved Out %':>11}"
@@ -124,7 +128,7 @@ def main():
     total_local_calls = 0
 
     for day in all_days:
-        g = gemini_stats[day]
+        g = cloud_stats[day]
         l = local_stats[day]
 
         ginp = g["inp"]

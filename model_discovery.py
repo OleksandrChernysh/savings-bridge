@@ -129,9 +129,11 @@ def build_profile(ollama_host: str = "http://127.0.0.1:11434") -> dict:
     ollama_models = list_ollama_models(ollama_host)
     lms_models = list_lmstudio_models()
     installed = ollama_models + lms_models
+    lms_prefixed = [{**m, "name": f"lmstudio/{m['name']}"} for m in lms_models]
+    local_pool = ollama_models or lms_prefixed
 
-    coder = _pick_best(ollama_models, ram_gb, prefer_coder=True) or "opencode/deepseek-v4.1-flash-free"
-    fast = _pick_best(ollama_models, ram_gb, prefer_coder=False) or "opencode/deepseek-v4.1-flash-free"
+    coder = _pick_best(local_pool, ram_gb, prefer_coder=True) or "opencode/deepseek-v4.1-flash-free"
+    fast = _pick_best(local_pool, ram_gb, prefer_coder=False) or "opencode/deepseek-v4.1-flash-free"
 
     aliases = {
         "fast": fast,
@@ -140,7 +142,7 @@ def build_profile(ollama_host: str = "http://127.0.0.1:11434") -> dict:
         "coder": coder,
     }
     # Keep legacy 7b/14b aliases mapped to best fitting local models if installed
-    if ollama_models:
+    if local_pool:
         aliases["7b"] = fast
         aliases["14b"] = coder
 

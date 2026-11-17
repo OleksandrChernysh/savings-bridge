@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from token_stats import load_gemini_stats, load_local_stats
+from token_stats import load_cloud_stats, load_local_stats
 
 
 def check_url(url: str, timeout: float = 1.0) -> bool:
@@ -26,10 +26,10 @@ def check_url(url: str, timeout: float = 1.0) -> bool:
 
 
 def build_summary(days: int = 10) -> dict:
-    gemini_stats = load_gemini_stats(days)
+    cloud_stats = load_cloud_stats(days)
     local_stats = load_local_stats()
 
-    all_days = sorted(set(list(gemini_stats.keys()) + list(local_stats.keys())))
+    all_days = sorted(set(list(cloud_stats.keys()) + list(local_stats.keys())))
     if days > 0 and len(all_days) > days:
         all_days = all_days[-days:]
 
@@ -39,7 +39,7 @@ def build_summary(days: int = 10) -> dict:
     chat_calls = chat_inp = chat_out = 0
 
     for day in all_days:
-        g = gemini_stats[day]
+        g = cloud_stats[day]
         l = local_stats[day]
         ginp, gout = g["inp"], g["out"]
         linp, lout, lcalls = l["local_inp"], l["local_out"], l["calls"]

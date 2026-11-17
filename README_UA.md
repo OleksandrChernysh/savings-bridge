@@ -81,7 +81,7 @@ python3 setup.py
 - `python3 setup.py --dry-run` — подивитися, що зробить програма, без реальних змін на диску
 - `python3 setup.py --skip-keys` — встановити без введення хмарних ключів (тільки для локальних моделей)
 
-Якщо ви додали хмарні ключі на macOS або Linux, підключіть файл менеджера ключів у терміналі:
+`local_bridge.py` автоматично підхоплює `~/.config/savings-bridge/secrets.env` на macOS, Linux та Windows. Якщо ці ключі також потрібні іншим інструментам у терміналі на macOS/Linux:
 ```bash
 source ~/.config/savings-bridge/secrets.env
 ```

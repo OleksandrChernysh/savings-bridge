@@ -81,7 +81,7 @@ Extra options:
 - `python3 setup.py --dry-run` — preview what the installer will do without writing files
 - `python3 setup.py --skip-keys` — skip cloud API key setup (local models only)
 
-If you added cloud API keys on macOS or Linux, load the key manager file in your shell:
+`local_bridge.py` automatically reads `~/.config/savings-bridge/secrets.env` on macOS, Linux, and Windows. If you also want those keys available to other shell tools on macOS/Linux:
 ```bash
 source ~/.config/savings-bridge/secrets.env
 ```

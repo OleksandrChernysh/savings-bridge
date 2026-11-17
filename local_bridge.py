@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Local LLM Bridge for Antigravity & Ollama
+Local & Free-Cloud LLM Bridge (Ollama, LM Studio, OpenRouter, NVIDIA NIM, OpenCode)
 Supports:
-  - code: generate / implement / append code directly to file (with truncation guard & optional tsc/verify)
+  - ask: general text Q&A, drafting, summarization, translation
+  - code: generate / implement / append code directly to file (with truncation guard & optional check/verify)
+  - review: pre-review git diff or files for bugs and edge cases
   - git-commit: generate conventional commit message from git diff
   - git-changelog: generate release notes / changelog from git log
   - parse-json: extract structured JSON from unstructured text
 
-Automatically logs local token usage to ~/.gemini/antigravity/local_tokens.jsonl
+Automatically logs local & free-cloud token usage to ~/.gemini/antigravity/local_tokens.jsonl
 """
 
 import argparse
@@ -37,9 +39,17 @@ MODEL_ALIASES = {
     "pickle": "opencode/big-pickle",
     "glm-free": "opencode/glm-5.3-flash-free",
     "nim": "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+    "openrouter": "openrouter/openrouter/free",
 }
-NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-OPENCODE_DEFAULT_LIMITS = {
+FREE_CLOUD_PREFIXES = ("opencode/", "nvidia/", "openrouter/", "groq/", "github/")
+OPENAI_COMPAT_PROVIDERS = {
+    "nvidia/": ("https://integrate.api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY", "NVIDIA NIM", "build.nvidia.com"),
+    "openrouter/": ("https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY", "OpenRouter", "openrouter.ai/keys"),
+    "groq/": ("https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY", "Groq", "console.groq.com/keys"),
+    "github/": ("https://models.inference.ai.azure.com/chat/completions", "GITHUB_TOKEN", "GitHub Models", "github.com/marketplace/models"),
+    "lmstudio/": (f"{os.environ.get('LM_STUDIO_HOST', 'http://127.0.0.1:1234').rstrip('/')}/v1/chat/completions", None, "LM Studio", "lmstudio.ai"),
+}
+CLOUD_FREE_DEFAULT_LIMITS = {
     "max_overwrite_lines": 200,
     "max_total_lines": 1200,
     "max_total_chars": 48000,
@@ -60,7 +70,39 @@ MODEL_LIMITS = {
     },
 }
 STATS_LOG_PATH = os.path.expanduser("~/.gemini/antigravity/local_tokens.jsonl")
-LOCK_PATH = "/tmp/local_bridge_ollama.lock"
+SECRETS_ENV_PATH = os.path.expanduser("~/.config/savings-bridge/secrets.env")
+LOCK_PATH = os.path.join(tempfile.gettempdir(), "local_bridge_ollama.lock")
+
+
+def load_secrets_env(path: str = SECRETS_ENV_PATH) -> None:
+    """Load key=value or export key=value pairs from secrets.env without overriding existing env vars."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip()
+                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                    try:
+                        val = json.loads(val) if val.startswith('"') else val[1:-1]
+                    except Exception:
+                        val = val[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except Exception:
+        pass
+
+
+load_secrets_env()
 
 PLACEHOLDER_PATTERNS = [
     re.compile(r"//\s*\.\.\.\s*(existing|rest|remaining|unchanged)", re.IGNORECASE),
@@ -283,43 +325,45 @@ def query_opencode(
     return "\n".join(text_parts).strip()
 
 
-def query_nvidia_nim(
+def query_openai_compat(
     command: str,
     model: str,
+    prefix: str,
     prompt: str,
     system: str = "",
     temperature: float = 0.2,
     timeout: int = 180,
 ) -> str:
-    """Query NVIDIA NIM OpenAI-compatible API (`nvidia/*`, requires NVIDIA_API_KEY)."""
-    api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
-    if not api_key:
-        print(
-            "Error: NVIDIA_API_KEY is not set. Export it in ~/.zshrc (get free key at build.nvidia.com).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    """Query any OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, Groq, GitHub Models, LM Studio)."""
+    api_url, env_var, display_name, setup_url = OPENAI_COMPAT_PROVIDERS[prefix]
+    headers = {"Content-Type": "application/json"}
+    if env_var:
+        api_key = os.environ.get(env_var, "").strip()
+        if not api_key:
+            print(
+                f"Error: {env_var} is not set. Add it to {SECRETS_ENV_PATH} or environment (get key at {setup_url}).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        headers["Authorization"] = f"Bearer {api_key}"
 
-    nim_model = model[len("nvidia/"):]
+    remote_model = model[len(prefix):]
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
     payload = {
-        "model": nim_model,
+        "model": remote_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": 4096,
         "stream": False,
     }
     req = urllib.request.Request(
-        NVIDIA_API_URL,
+        api_url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers=headers,
     )
 
     start = time.monotonic()
@@ -328,13 +372,13 @@ def query_nvidia_nim(
             res = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        print(f"NVIDIA NIM HTTP {e.code} (model={nim_model}): {body[:500]}", file=sys.stderr)
+        print(f"{display_name} HTTP {e.code} (model={remote_model}): {body[:500]}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.URLError as e:
-        print(f"Error connecting to NVIDIA NIM: {e}", file=sys.stderr)
+        print(f"Error connecting to {display_name}: {e}", file=sys.stderr)
         sys.exit(1)
     except TimeoutError:
-        print(f"NVIDIA NIM request timed out after {timeout}s (model={nim_model}).", file=sys.stderr)
+        print(f"{display_name} request timed out after {timeout}s (model={remote_model}).", file=sys.stderr)
         sys.exit(1)
 
     duration_sec = time.monotonic() - start
@@ -361,11 +405,20 @@ def query_backend(
     temperature: float = 0.2,
     timeout: int = 300,
 ) -> str:
-    """Route to OpenCode CLI (`opencode/*`), NVIDIA NIM (`nvidia/*`), or local Ollama."""
+    """Route to OpenCode CLI (`opencode/*`), OpenAI-compatible APIs (`nvidia/*`, `openrouter/*`, `groq/*`, `github/*`, `lmstudio/*`), or Ollama."""
     if model.startswith("opencode/"):
         return query_opencode(command=command, model=model, prompt=prompt, system=system, timeout=timeout)
-    if model.startswith("nvidia/"):
-        return query_nvidia_nim(command=command, model=model, prompt=prompt, system=system, temperature=temperature, timeout=timeout)
+    for prefix in OPENAI_COMPAT_PROVIDERS:
+        if model.startswith(prefix):
+            return query_openai_compat(
+                command=command,
+                model=model,
+                prefix=prefix,
+                prompt=prompt,
+                system=system,
+                temperature=temperature,
+                timeout=timeout,
+            )
     return query_ollama(
         command=command,
         model=model,
@@ -582,11 +635,21 @@ def detect_secrets(file_paths: list[str], texts: list[str]) -> str | None:
     return None
 
 
+def _resolve_scope_limits(model: str) -> dict:
+    """Resolve scope limits for explicit, cloud-free, or dynamically discovered local models."""
+    if model.startswith(FREE_CLOUD_PREFIXES):
+        return CLOUD_FREE_DEFAULT_LIMITS
+    if model in MODEL_LIMITS:
+        return MODEL_LIMITS[model]
+    low = model.lower()
+    if any(tag in low for tag in (":1b", ":3b", ":7b", ":8b", "3b-", "7b-", "8b-")):
+        return MODEL_LIMITS["qwen2.5:7b"]
+    return MODEL_LIMITS["qwen2.5-coder:14b"]
+
+
 def check_scope_limits(model: str, prompt: str, existing: str, context_contents: list[str], append: bool) -> str | None:
     """Enforce hard per-model task and context size limits to prevent oversized local calls."""
-    limits = OPENCODE_DEFAULT_LIMITS if model.startswith(("opencode/", "nvidia/")) else MODEL_LIMITS.get(model)
-    if not limits:
-        return None
+    limits = _resolve_scope_limits(model)
 
     if len(prompt) > limits["max_prompt_chars"]:
         return (
@@ -636,12 +699,12 @@ def handle_code(args):
                 print(f"Warning: context file not found: {ctx_file}", file=sys.stderr)
 
     model = resolve_model(args.model, DEFAULT_CODER_MODEL)
-    if model.startswith(("opencode/", "nvidia/")):
+    if model.startswith(FREE_CLOUD_PREFIXES):
         checked_paths = [p for p in ([args.file, args.out] + (args.context or [])) if p]
         secret_err = detect_secrets(checked_paths, [args.prompt, existing] + context_contents)
         if secret_err:
             print(
-                f"Security block (exit 3): {secret_err}. Use local Ollama (7b/14b) or Cloud instead.",
+                f"Security block (exit 3): {secret_err}. Use local Ollama (-m fast / -m coder) or Primary Cloud model instead.",
                 file=sys.stderr,
             )
             sys.exit(3)
@@ -905,10 +968,10 @@ def handle_review(args):
     payload = "\n\n".join(parts)
     focus = args.prompt or "Find bugs, edge cases, null/undefined issues, type coercion bugs, and security flaws."
 
-    if model.startswith(("opencode/", "nvidia/")):
+    if model.startswith(FREE_CLOUD_PREFIXES):
         secret_err = detect_secrets(file_paths, [focus, payload])
         if secret_err:
-            print(f"SECURITY BLOCK ({secret_err}). Sensitive diffs must be reviewed in Cloud Gemini.", file=sys.stderr)
+            print(f"SECURITY BLOCK ({secret_err}). Sensitive diffs must be reviewed in Primary Cloud model.", file=sys.stderr)
             sys.exit(3)
 
     scope_err = check_scope_limits(model, focus, "", [payload], append=True)
@@ -951,11 +1014,11 @@ def handle_ask(args):
         with open(path, "r", encoding="utf-8") as f:
             context_parts.append(f"--- CONTEXT: {path} ---\n{f.read()}")
 
-    if model.startswith(("opencode/", "nvidia/")):
+    if model.startswith(FREE_CLOUD_PREFIXES):
         secret_err = detect_secrets(context_files, [args.system or "", prompt_text, *context_parts])
         if secret_err:
             print(
-                f"SECURITY BLOCK ({secret_err}). Use local Ollama (-m 7b / -m 14b) for sensitive text.",
+                f"SECURITY BLOCK ({secret_err}). Use local Ollama (-m fast / -m coder) for sensitive text.",
                 file=sys.stderr,
             )
             sys.exit(3)
@@ -1061,7 +1124,7 @@ def main():
     p_review.add_argument("--diff", "-d", help="Git diff target/range (default: HEAD)")
     p_review.add_argument("--file", "-f", action="append", help="Specific file(s) to review")
     p_review.add_argument("--prompt", "-p", help="Custom review focus")
-    p_review.add_argument("--model", "-m", default="pickle", help="Model name or alias (default: pickle; sensitive diffs must be reviewed in Cloud Gemini)")
+    p_review.add_argument("--model", "-m", default="pickle", help="Model name or alias (default: pickle; sensitive diffs must be reviewed in Primary Cloud model)")
     p_review.add_argument("--timeout", type=int, default=180, help="Request timeout in seconds (default: 180)")
     p_review.set_defaults(func=handle_review)
 
@@ -1071,7 +1134,7 @@ def main():
     p_ask.add_argument("--system", "-s", help="Optional system instruction")
     p_ask.add_argument("--context", "-c", action="append", help="Optional context file(s)")
     p_ask.add_argument("--out", "-o", help="Optional output file path")
-    p_ask.add_argument("--model", "-m", default="free", help="Model name or alias (default: free; also 7b/14b/glm-free/pickle/nim)")
+    p_ask.add_argument("--model", "-m", default="free", help="Model name or alias (default: free; also fast/coder/openrouter/glm-free/pickle/nim)")
     p_ask.add_argument("--temperature", "-t", type=float, default=0.3, help="Sampling temperature (default: 0.3)")
     p_ask.add_argument("--num-ctx", type=int, default=8192, help="Context size for Ollama (default: 8192)")
     p_ask.add_argument("--timeout", type=int, default=180, help="Request timeout in seconds (default: 180)")

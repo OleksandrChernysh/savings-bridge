@@ -45,12 +45,15 @@ def discover_local() -> dict[str, list[str]]:
 def install_files(dry_run: bool = False) -> None:
     home = Path.home()
     bin_dir = home / ".gemini" / "bin"
-    skill_dir = home / ".gemini" / "antigravity" / "skills" / "local-coder"
+    skill_dirs = [home / ".gemini" / "antigravity" / "skills" / "local-coder"]
+    if (home / ".claude").exists():
+        skill_dirs.append(home / ".claude" / "skills" / "local-coder")
 
     scripts = ["local_bridge.py", "token_stats.py", "cli_meter.py", "metrics_server.py", "model_discovery.py"]
     if dry_run:
         print(f"[DRY-RUN] Would copy {scripts} -> {bin_dir}")
-        print(f"[DRY-RUN] Would copy skills/local-coder/SKILL.md -> {skill_dir}")
+        for sdir in skill_dirs:
+            print(f"[DRY-RUN] Would copy skills/local-coder/SKILL.md -> {sdir}")
         return
 
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -63,10 +66,15 @@ def install_files(dry_run: bool = False) -> None:
         if platform.system() != "Windows":
             os.chmod(dst, 0o755)
 
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "skills" / "local-coder" / "SKILL.md", skill_dir / "SKILL.md")
+    for sdir in skill_dirs:
+        sdir.mkdir(parents=True, exist_ok=True)
+        sdst = sdir / "SKILL.md"
+        if sdst.exists():
+            shutil.copy2(sdst, sdst.with_suffix(".md.bak"))
+        shutil.copy2(ROOT / "skills" / "local-coder" / "SKILL.md", sdst)
     print(f"Installed scripts -> {bin_dir}")
-    print(f"Installed skill   -> {skill_dir}")
+    for sdir in skill_dirs:
+        print(f"Installed skill   -> {sdir}")
 
 
 def configure_keys(dry_run: bool = False) -> None:
@@ -99,8 +107,9 @@ def configure_keys(dry_run: bool = False) -> None:
     if platform.system() != "Windows":
         os.chmod(secrets_path, 0o600)
     print(f"\nSaved {len(entries)} keys -> {secrets_path}")
+    print("Note: local_bridge.py loads secrets.env automatically on all OSes.")
     if platform.system() != "Windows":
-        print(f"Add to ~/.zshrc or ~/.bashrc:  source {secrets_path}")
+        print(f"Optional for shell tools: add `source {secrets_path}` to ~/.zshrc or ~/.bashrc")
 
 
 def main() -> None:
@@ -132,7 +141,7 @@ def main() -> None:
         configure_keys(dry_run=args.dry_run)
 
     print("\nDone! Quick test:")
-    print("  python3 ~/.gemini/bin/local_bridge.py ask -m 7b -p 'Say hello in 5 words'")
+    print("  python3 ~/.gemini/bin/local_bridge.py ask -m fast -p 'Say hello in 5 words'")
     print("  python3 ~/.gemini/bin/metrics_server.py   # -> http://127.0.0.1:4040/metrics/summary")
 
 

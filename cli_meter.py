@@ -3,7 +3,7 @@
 Universal CLI Token Meter for Antigravity Quota Bar.
 
 Wraps any external CLI (via `cli_meter.py [opts] -- <cmd> ...` or transparent
-symlinks in PATH like `~/.local/bin/coderabbit -> ~/.gemini/bin/cli_meter.py`),
+symlinks in PATH like `~/.local/bin/coderabbit -> ~/.config/savings-bridge/bin/cli_meter.py`),
 streams output live, estimates output tokens from ANSI-stripped text, and
 appends standard records to `~/.config/savings-bridge/local_tokens.jsonl`.
 """

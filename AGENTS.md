@@ -5,7 +5,7 @@ Instructions for AI agents (Antigravity, Claude Code, Codex, Cursor) operating i
 ## 1. Dynamic Model Discovery First
 Before calling `local_bridge.py` on a new or unfamiliar machine, inspect host RAM, installed local models, and dynamic role defaults:
 ```bash
-python3 ~/.gemini/bin/local_bridge.py models --json
+savings-bridge models --json
 ```
 - Use dynamic role aliases instead of hardcoding model tags:
   - `-m fast` / `-m text` / `-m parser` for short text prompts, summarization, translation, JSON parsing, git commits.
@@ -16,7 +16,7 @@ python3 ~/.gemini/bin/local_bridge.py models --json
 ## 2. Routing: What Goes Where
 - **Text / Chat / Drafting (`ask` / `chat` / `text`):** Offload summarization, translation, drafting replies, and general Q&A via:
   ```bash
-  python3 ~/.gemini/bin/local_bridge.py ask -m free -p "<prompt>" [-c <context_file>]
+  savings-bridge ask -m free -p "<prompt>" [-c <context_file>]
   ```
   Use `-m fast` for offline or sensitive text.
 - **Code / Tests / Review / JSON / Git:** Offload atomic slices via `code`, `review`, `parse-json`, `git-commit`, `git-changelog`.
@@ -29,9 +29,9 @@ python3 ~/.gemini/bin/local_bridge.py models --json
 
 ## 4. Savings Reports & Widget Endpoint
 - Show user savings by period:
-  - Last day: `python3 ~/.gemini/bin/token_stats.py --period day`
-  - Last week: `python3 ~/.gemini/bin/token_stats.py --period week`
-  - Last month: `python3 ~/.gemini/bin/token_stats.py --period month`
+  - Last day: `savings-stats --period day`
+  - Last week: `savings-stats --period week`
+  - Last month: `savings-stats --period month`
 - HTTP widget endpoint (`metrics_server.py`):
   - `GET http://127.0.0.1:4040/metrics/summary?period=day|week|month`
   - `GET http://127.0.0.1:4040/health`

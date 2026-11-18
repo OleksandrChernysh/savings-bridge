@@ -3,7 +3,7 @@
 Cross-platform onboarding & setup for Savings Bridge (macOS / Linux / Windows).
 - Discovers local Ollama / LM Studio models
 - Displays provider login / free-tier links from providers.json
-- Installs scripts to ~/.gemini/bin/ (or ~/.local/bin/) and skill to ~/.gemini/antigravity/skills/
+- Installs scripts to ~/.config/savings-bridge/bin/ (and PATH links in ~/.local/bin/) and skill to ~/.gemini/antigravity/skills/
 - Saves API keys securely (chmod 600 on POSIX) to ~/.config/savings-bridge/secrets.env
 """
 

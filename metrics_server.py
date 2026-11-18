@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from bridge_common import get_lmstudio_host, get_ollama_host
 from token_stats import load_cloud_stats, load_local_stats
 
 
@@ -153,12 +154,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._send_json(200, build_summary(days))
             return
         if parsed.path == "/health":
+            ollama_host = get_ollama_host()
+            lms_host = get_lmstudio_host()
             self._send_json(
                 200,
                 {
                     "status": "ok",
-                    "ollama": check_url("http://127.0.0.1:11434/api/tags"),
-                    "lm_studio": check_url("http://127.0.0.1:1234/v1/models"),
+                    "ollama": check_url(f"{ollama_host}/api/tags"),
+                    "lm_studio": check_url(f"{lms_host}/v1/models"),
+                    "ollama_host": ollama_host,
+                    "lm_studio_host": lms_host,
                 },
             )
             return

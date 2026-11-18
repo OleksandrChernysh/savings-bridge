@@ -88,8 +88,57 @@ def install_files(dry_run: bool = False) -> None:
                 link.unlink()
             link.symlink_to(bin_dir / target_name)
         print(f"Linked PATH cmds  -> {local_bin} (savings-bridge, local-bridge, savings-stats)")
+    else:
+        for cmd_name, target_name in [
+            ("savings-bridge", "local_bridge.py"),
+            ("local-bridge", "local_bridge.py"),
+            ("savings-stats", "token_stats.py"),
+        ]:
+            cmd_path = bin_dir / f"{cmd_name}.cmd"
+            cmd_path.write_text(f'@echo off\r\npython "%~dp0{target_name}" %*\r\n', encoding="utf-8")
+        print(f"Created Windows .cmd wrappers -> {bin_dir}")
+        path_entries = [p.strip().lower() for p in os.environ.get("PATH", "").split(os.pathsep) if p.strip()]
+        if str(bin_dir).lower() not in path_entries:
+            print(f'Add to Windows PATH to run commands globally:\n  setx PATH "%PATH%;{bin_dir}"')
     for sdir in skill_dirs:
         print(f"Installed skill   -> {sdir}")
+
+
+def migrate_legacy_logs(
+    dry_run: bool = False,
+    legacy_path: Path | None = None,
+    target_path: Path | None = None,
+) -> int:
+    """One-time merge of legacy ~/.gemini/antigravity/local_tokens.jsonl into ~/.config/savings-bridge/local_tokens.jsonl."""
+    home = Path.home()
+    src = legacy_path or (home / ".gemini" / "antigravity" / "local_tokens.jsonl")
+    dst = target_path or (home / ".config" / "savings-bridge" / "local_tokens.jsonl")
+    if not src.exists():
+        return 0
+
+    src_lines = [ln.strip() for ln in src.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not src_lines:
+        return 0
+
+    dst_lines: list[str] = []
+    if dst.exists():
+        dst_lines = [ln.strip() for ln in dst.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    seen = set(dst_lines)
+    added = [ln for ln in src_lines if ln not in seen]
+
+    if dry_run:
+        print(f"[DRY-RUN] Would merge {len(added)} legacy records from {src} -> {dst}")
+        return len(added)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        shutil.copy2(dst, dst.with_suffix(".jsonl.bak"))
+    merged = dst_lines + added
+    dst.write_text("\n".join(merged) + "\n", encoding="utf-8")
+    src.rename(src.with_suffix(".jsonl.migrated.bak"))
+    print(f"Migrated {len(added)} legacy records -> {dst} (backup: {src.with_suffix('.jsonl.migrated.bak')})")
+    return len(added)
 
 
 def configure_keys(dry_run: bool = False) -> None:
@@ -152,6 +201,7 @@ def main() -> None:
         print(f"Saved dynamic model profile -> {saved}")
 
     install_files(dry_run=args.dry_run)
+    migrate_legacy_logs(dry_run=args.dry_run)
     if not args.skip_keys:
         configure_keys(dry_run=args.dry_run)
 

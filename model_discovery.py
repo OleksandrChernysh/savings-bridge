@@ -12,7 +12,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-from bridge_common import fetch_json
+from bridge_common import fetch_json, get_lmstudio_host, get_ollama_host
 
 _fetch_json = fetch_json
 
@@ -57,8 +57,9 @@ def get_ram_gb() -> float:
     return 0.0
 
 
-def list_ollama_models(ollama_host: str = "http://127.0.0.1:11434") -> list[dict]:
-    data = _fetch_json(f"{ollama_host.rstrip('/')}/api/tags")
+def list_ollama_models(ollama_host: str | None = None) -> list[dict]:
+    host = (ollama_host or get_ollama_host()).rstrip("/")
+    data = _fetch_json(f"{host}/api/tags")
     if not data or not isinstance(data.get("models"), list):
         return []
     models = []
@@ -80,8 +81,9 @@ def list_ollama_models(ollama_host: str = "http://127.0.0.1:11434") -> list[dict
     return models
 
 
-def list_lmstudio_models(lms_host: str = "http://127.0.0.1:1234") -> list[dict]:
-    data = _fetch_json(f"{lms_host.rstrip('/')}/v1/models")
+def list_lmstudio_models(lms_host: str | None = None) -> list[dict]:
+    host = (lms_host or get_lmstudio_host()).rstrip("/")
+    data = _fetch_json(f"{host}/v1/models")
     if not data or not isinstance(data.get("data"), list):
         return []
     return [
@@ -120,10 +122,10 @@ def _pick_best(models: list[dict], ram_gb: float, prefer_coder: bool) -> str | N
     return max(fitting, key=score)["name"]
 
 
-def build_profile(ollama_host: str = "http://127.0.0.1:11434") -> dict:
+def build_profile(ollama_host: str | None = None, lms_host: str | None = None) -> dict:
     ram_gb = get_ram_gb()
     ollama_models = list_ollama_models(ollama_host)
-    lms_models = list_lmstudio_models()
+    lms_models = list_lmstudio_models(lms_host)
     installed = ollama_models + lms_models
     lms_prefixed = [{**m, "name": f"lmstudio/{m['name']}"} for m in lms_models]
     local_pool = ollama_models or lms_prefixed

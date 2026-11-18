@@ -22,10 +22,10 @@
 
 Під час запуску `python3 setup.py` на комп'ютері з'являться лише легкі текстові скрипти (без важких програм і сторонніх бібліотек Python):
 
-1. **Скрипти помічника** у папку `~/.gemini/bin/` (`local_bridge.py`, `token_stats.py`, `cli_meter.py`, `metrics_server.py`, `model_discovery.py`) та інструкцію для вашого AI-агента (`skills/local-coder/SKILL.md`) для **Gemini / Antigravity** (`~/.gemini/antigravity/skills/local-coder/`), **Claude Code** (`~/.claude/skills/local-coder/`, якщо є `~/.claude/`) та **ChatGPT / Codex CLI** (`~/.codex/skills/local-coder/`, якщо є `~/.codex/`).
+1. **Скрипти помічника** у папку `~/.config/savings-bridge/bin/` (`local_bridge.py`, `token_stats.py`, `cli_meter.py`, `metrics_server.py`, `model_discovery.py`) та інструкцію для вашого AI-агента (`skills/savings-bridge/SKILL.md`) для **Gemini / Antigravity** (`~/.gemini/antigravity/skills/savings-bridge/`), **Claude Code** (`~/.claude/skills/savings-bridge/`, якщо є `~/.claude/`) та **ChatGPT / Codex CLI** (`~/.codex/skills/savings-bridge/`, якщо є `~/.codex/`).
 2. **Локальний менеджер ключів (файл `secrets.env`)** у `~/.config/savings-bridge/secrets.env` з правами доступу тільки для вашого користувача (`chmod 600`). Туди зберігаються API-ключі хмарних сервісів, які ви захочете підключити (цей крок можна пропустити, якщо користуєтесь лише локальними моделями).
 3. **Профіль вашого комп'ютера** у `~/.config/savings-bridge/models.json` — список знайдених локальних моделей і автоматично підібраних налаштувань під вашу оперативну пам'ять (RAM).
-4. **Журнал економії** у `~/.gemini/antigravity/local_tokens.jsonl` — сюди записується кількість зекономлених токенів.
+4. **Журнал економії** у `~/.config/savings-bridge/local_tokens.jsonl` — сюди записується кількість зекономлених токенів.
 5. **Опціонально (для роботи без інтернету):** якщо у вас ще не встановлена програма для запуску моделей на комп'ютері (наприклад, **Ollama** або **LM Studio**), інсталятор сам перевірить обсяг вашої RAM і підкаже, що саме завантажити. Сама Ollama/LM Studio автоматично не встановлюється — ви ставите її за бажанням.
 
 ---
@@ -49,20 +49,20 @@
 
 ```bash
 # Економія за останній день (сьогодні)
-python3 ~/.gemini/bin/token_stats.py --period day
+python3 ~/.config/savings-bridge/bin/token_stats.py --period day
 
 # Економія за останній тиждень (7 днів)
-python3 ~/.gemini/bin/token_stats.py --period week
+python3 ~/.config/savings-bridge/bin/token_stats.py --period week
 
 # Економія за останній місяць (30 днів)
-python3 ~/.gemini/bin/token_stats.py --period month
+python3 ~/.config/savings-bridge/bin/token_stats.py --period month
 ```
 
 ### Веб-сторінка та дані для віджетів
 
 Запустіть локальний сервер лічильника:
 ```bash
-python3 ~/.gemini/bin/metrics_server.py --port 4040
+python3 ~/.config/savings-bridge/bin/metrics_server.py --port 4040
 ```
 Після запуску доступні адреси:
 - `http://127.0.0.1:4040/` — проста сторінка в браузері зі статистикою економії
@@ -93,16 +93,16 @@ source ~/.config/savings-bridge/secrets.env
 
 ```bash
 # 1. Текстовий запит через безкоштовну хмарну модель
-python3 ~/.gemini/bin/local_bridge.py ask -p "Скороти цей лист до 3 головних пунктів" -c letter.txt
+python3 ~/.config/savings-bridge/bin/local_bridge.py ask -p "Скороти цей лист до 3 головних пунктів" -c letter.txt
 
 # 2. Текстовий запит локально на вашому комп'ютері (без інтернету)
-python3 ~/.gemini/bin/local_bridge.py ask -m fast -p "Переклади цей текст українською"
+python3 ~/.config/savings-bridge/bin/local_bridge.py ask -m fast -p "Переклади цей текст українською"
 
 # 3. Проста задача з кодом (модель підбирається автоматично під ваш комп'ютер)
-python3 ~/.gemini/bin/local_bridge.py code -m coder -f helper.ts -c types.ts --check -p "Додай перевірку email"
+python3 ~/.config/savings-bridge/bin/local_bridge.py code -m coder -f helper.ts -c types.ts --check -p "Додай перевірку email"
 
 # 4. Перевірити, які моделі система підібрала під ваш комп'ютер
-python3 ~/.gemini/bin/local_bridge.py models
+python3 ~/.config/savings-bridge/bin/local_bridge.py models
 ```
 
 ---

@@ -57,6 +57,24 @@ def append_usage_record(
         pass
 
 
+def normalize_http_url(raw: str) -> str:
+    """Ensure a host URL has an HTTP(S) scheme and no trailing slash."""
+    url = raw.strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = f"http://{url}"
+    return url
+
+
+def get_ollama_host() -> str:
+    """Return normalized OLLAMA_HOST (default http://127.0.0.1:11434)."""
+    return normalize_http_url(os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+
+
+def get_lmstudio_host() -> str:
+    """Return normalized LM_STUDIO_HOST (default http://127.0.0.1:1234)."""
+    return normalize_http_url(os.environ.get("LM_STUDIO_HOST", "http://127.0.0.1:1234"))
+
+
 def fetch_json(url: str, timeout: float = 1.5) -> dict | None:
     """Fetch and decode JSON from a URL, returning None on network/parse error."""
     try:

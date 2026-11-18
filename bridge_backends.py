@@ -18,7 +18,14 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 
-from bridge_common import SECRETS_ENV_PATH, STATS_LOG_PATH, append_usage_record
+from bridge_common import (
+    SECRETS_ENV_PATH,
+    STATS_LOG_PATH,
+    append_usage_record,
+    get_lmstudio_host,
+    get_ollama_host,
+    normalize_http_url as normalize_ollama_url,
+)
 
 DEFAULT_CODER_MODEL = "qwen2.5-coder:14b"
 DEFAULT_PARSER_MODEL = "qwen2.5:7b"
@@ -39,7 +46,7 @@ OPENAI_COMPAT_PROVIDERS = {
     "openrouter/": ("https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY", "OpenRouter", "openrouter.ai/keys"),
     "groq/": ("https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY", "Groq", "console.groq.com/keys"),
     "github/": ("https://models.inference.ai.azure.com/chat/completions", "GITHUB_TOKEN", "GitHub Models", "github.com/marketplace/models"),
-    "lmstudio/": (f"{os.environ.get('LM_STUDIO_HOST', 'http://127.0.0.1:1234').rstrip('/')}/v1/chat/completions", None, "LM Studio", "lmstudio.ai"),
+    "lmstudio/": (f"{get_lmstudio_host()}/v1/chat/completions", None, "LM Studio", "lmstudio.ai"),
 }
 
 LOCK_PATH = os.path.join(tempfile.gettempdir(), "local_bridge_ollama.lock")
@@ -75,16 +82,22 @@ def load_secrets_env(path: str = SECRETS_ENV_PATH) -> None:
 
 load_secrets_env()
 
-
-def normalize_ollama_url(raw: str) -> str:
-    """Ensure OLLAMA_HOST has an HTTP scheme and no trailing slash."""
-    url = raw.strip().rstrip("/")
-    if not url.startswith(("http://", "https://")):
-        url = f"http://{url}"
-    return url
+OLLAMA_API = get_ollama_host()
 
 
-OLLAMA_API = normalize_ollama_url(os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
+class BackendError(RuntimeError):
+    """Raised when a model backend fails; retryable indicates fallback is appropriate."""
+
+    def __init__(self, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _fail(message: str, raise_on_error: bool, retryable: bool = False) -> None:
+    if raise_on_error:
+        raise BackendError(message, retryable=retryable)
+    print(message, file=sys.stderr)
+    sys.exit(1)
 
 
 def _get_dynamic_profile() -> dict:
@@ -150,6 +163,7 @@ def query_ollama(
     num_ctx: int = 16384,
     temperature: float = 0.2,
     timeout: int = 300,
+    raise_on_error: bool = False,
 ) -> str:
     messages = []
     if system:
@@ -183,11 +197,9 @@ def query_ollama(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 res = json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
-        print(f"Error connecting to Ollama at {OLLAMA_API}: {e}", file=sys.stderr)
-        sys.exit(1)
+        _fail(f"Error connecting to Ollama at {OLLAMA_API}: {e}", raise_on_error, retryable=True)
     except TimeoutError:
-        print(f"Ollama request timed out after {timeout}s (model={model}).", file=sys.stderr)
-        sys.exit(1)
+        _fail(f"Ollama request timed out after {timeout}s (model={model}).", raise_on_error, retryable=True)
 
     msg = res.get("message", {}).get("content", "")
     eval_count = res.get("eval_count", 0)
@@ -216,6 +228,7 @@ def query_opencode(
     prompt: str,
     system: str = "",
     timeout: int = 180,
+    raise_on_error: bool = False,
 ) -> str:
     """Query an OpenCode free model via `opencode run --format json` (runs in parallel with Ollama)."""
     combined_prompt = f"{system}\n\n{prompt}".strip() if system else prompt
@@ -229,17 +242,18 @@ def query_opencode(
             timeout=timeout,
         )
     except FileNotFoundError:
-        print("Error: `opencode` CLI not found in PATH.", file=sys.stderr)
-        sys.exit(1)
+        _fail("Error: `opencode` CLI not found in PATH.", raise_on_error, retryable=True)
     except subprocess.TimeoutExpired:
-        print(f"OpenCode request timed out after {timeout}s (model={model}).", file=sys.stderr)
-        sys.exit(1)
+        _fail(f"OpenCode request timed out after {timeout}s (model={model}).", raise_on_error, retryable=True)
 
     duration_sec = time.monotonic() - start
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip()
-        print(f"OpenCode error (exit {proc.returncode}, model={model}): {err}", file=sys.stderr)
-        sys.exit(1)
+        _fail(
+            f"OpenCode error (exit {proc.returncode}, model={model}): {err}",
+            raise_on_error,
+            retryable=True,
+        )
 
     text_parts: list[str] = []
     input_tokens = 0
@@ -279,6 +293,7 @@ def query_openai_compat(
     system: str = "",
     temperature: float = 0.2,
     timeout: int = 180,
+    raise_on_error: bool = False,
 ) -> str:
     """Query any OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, Groq, GitHub Models, LM Studio)."""
     api_url, env_var, display_name, setup_url = OPENAI_COMPAT_PROVIDERS[prefix]
@@ -286,11 +301,11 @@ def query_openai_compat(
     if env_var:
         api_key = os.environ.get(env_var, "").strip()
         if not api_key:
-            print(
+            _fail(
                 f"Error: {env_var} is not set. Add it to {SECRETS_ENV_PATH} or environment (get key at {setup_url}).",
-                file=sys.stderr,
+                raise_on_error,
+                retryable=True,
             )
-            sys.exit(1)
         headers["Authorization"] = f"Bearer {api_key}"
 
     remote_model = model[len(prefix):]
@@ -318,14 +333,19 @@ def query_openai_compat(
             res = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        print(f"{display_name} HTTP {e.code} (model={remote_model}): {body[:500]}", file=sys.stderr)
-        sys.exit(1)
+        _fail(
+            f"{display_name} HTTP {e.code} (model={remote_model}): {body[:500]}",
+            raise_on_error,
+            retryable=e.code in (429, 500, 502, 503, 504),
+        )
     except urllib.error.URLError as e:
-        print(f"Error connecting to {display_name}: {e}", file=sys.stderr)
-        sys.exit(1)
+        _fail(f"Error connecting to {display_name}: {e}", raise_on_error, retryable=True)
     except TimeoutError:
-        print(f"{display_name} request timed out after {timeout}s (model={remote_model}).", file=sys.stderr)
-        sys.exit(1)
+        _fail(
+            f"{display_name} request timed out after {timeout}s (model={remote_model}).",
+            raise_on_error,
+            retryable=True,
+        )
 
     duration_sec = time.monotonic() - start
     choices = res.get("choices") or []
@@ -341,19 +361,55 @@ def query_openai_compat(
     return content.strip()
 
 
-def query_backend(
+def build_fallback_chain(command: str, primary_model: str) -> list[str]:
+    """Return ordered fallback models when a free-cloud backend hits 429, timeout, or missing CLI/key."""
+    cloud_prefixes = ("opencode/", "nvidia/", "openrouter/", "groq/", "github/")
+    if not primary_model.startswith(cloud_prefixes):
+        return []
+
+    chain: list[str] = []
+    if os.environ.get("OPENROUTER_API_KEY", "").strip():
+        chain.append(MODEL_ALIASES["openrouter"])
+    if os.environ.get("NVIDIA_API_KEY", "").strip():
+        chain.append(MODEL_ALIASES["nim"])
+
+    local_default = (
+        resolve_model("coder", DEFAULT_CODER_MODEL)
+        if command in ("code", "code-repair")
+        else resolve_model("fast", DEFAULT_PARSER_MODEL)
+    )
+    if not local_default.startswith(cloud_prefixes):
+        chain.append(local_default)
+
+    seen = {primary_model}
+    deduped: list[str] = []
+    for candidate in chain:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            deduped.append(candidate)
+    return deduped
+
+
+def _query_single_backend(
     command: str,
     model: str,
     prompt: str,
-    system: str = "",
-    schema: dict | str | None = None,
-    num_ctx: int = 16384,
-    temperature: float = 0.2,
-    timeout: int = 300,
+    system: str,
+    schema: dict | str | None,
+    num_ctx: int,
+    temperature: float,
+    timeout: int,
+    raise_on_error: bool,
 ) -> str:
-    """Route to OpenCode CLI (`opencode/*`), OpenAI-compatible APIs (`nvidia/*`, `openrouter/*`, `groq/*`, `github/*`, `lmstudio/*`), or Ollama."""
     if model.startswith("opencode/"):
-        return query_opencode(command=command, model=model, prompt=prompt, system=system, timeout=timeout)
+        return query_opencode(
+            command=command,
+            model=model,
+            prompt=prompt,
+            system=system,
+            timeout=timeout,
+            raise_on_error=raise_on_error,
+        )
     for prefix in OPENAI_COMPAT_PROVIDERS:
         if model.startswith(prefix):
             return query_openai_compat(
@@ -364,6 +420,7 @@ def query_backend(
                 system=system,
                 temperature=temperature,
                 timeout=timeout,
+                raise_on_error=raise_on_error,
             )
     return query_ollama(
         command=command,
@@ -374,4 +431,40 @@ def query_backend(
         num_ctx=num_ctx,
         temperature=temperature,
         timeout=timeout,
+        raise_on_error=raise_on_error,
     )
+
+
+def query_backend(
+    command: str,
+    model: str,
+    prompt: str,
+    system: str = "",
+    schema: dict | str | None = None,
+    num_ctx: int = 16384,
+    temperature: float = 0.2,
+    timeout: int = 300,
+    allow_fallback: bool = True,
+) -> str:
+    """Route to OpenCode CLI, OpenAI-compatible APIs, or Ollama with automatic fallback on 429/outage."""
+    if not allow_fallback:
+        return _query_single_backend(
+            command, model, prompt, system, schema, num_ctx, temperature, timeout, raise_on_error=False
+        )
+
+    candidates = [model] + build_fallback_chain(command, model)
+    last_error: BackendError | None = None
+    for idx, candidate in enumerate(candidates):
+        try:
+            return _query_single_backend(
+                command, candidate, prompt, system, schema, num_ctx, temperature, timeout, raise_on_error=True
+            )
+        except BackendError as exc:
+            last_error = exc
+            if not exc.retryable or idx == len(candidates) - 1:
+                break
+            next_model = candidates[idx + 1]
+            print(f"[fallback] {candidate} failed ({exc}); trying {next_model}...", file=sys.stderr)
+
+    print(str(last_error) if last_error else "Backend error.", file=sys.stderr)
+    sys.exit(1)

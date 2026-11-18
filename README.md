@@ -22,10 +22,10 @@ Instead of spending your expensive primary model on every small task (translatio
 
 Running `python3 setup.py` installs only lightweight text scripts (no heavy apps or external Python packages):
 
-1. **Assistant scripts** in `~/.gemini/bin/` (`local_bridge.py`, `token_stats.py`, `cli_meter.py`, `metrics_server.py`, `model_discovery.py`) and agent instruction files (`skills/local-coder/SKILL.md`) for **Gemini / Antigravity** (`~/.gemini/antigravity/skills/local-coder/`), **Claude Code** (`~/.claude/skills/local-coder/`, when `~/.claude/` exists), and **ChatGPT / Codex CLI** (`~/.codex/skills/local-coder/`, when `~/.codex/` exists).
+1. **Assistant scripts** in `~/.config/savings-bridge/bin/` (`local_bridge.py`, `token_stats.py`, `cli_meter.py`, `metrics_server.py`, `model_discovery.py`) and agent instruction files (`skills/savings-bridge/SKILL.md`) for **Gemini / Antigravity** (`~/.gemini/antigravity/skills/savings-bridge/`), **Claude Code** (`~/.claude/skills/savings-bridge/`, when `~/.claude/` exists), and **ChatGPT / Codex CLI** (`~/.codex/skills/savings-bridge/`, when `~/.codex/` exists).
 2. **Local key manager (`secrets.env`)** in `~/.config/savings-bridge/secrets.env` with access restricted to your user only (`chmod 600` on macOS/Linux). It stores API keys for any cloud providers you choose to connect (you can skip this step if you only use local models).
 3. **Computer hardware profile** in `~/.config/savings-bridge/models.json` — the list of detected local models and settings automatically tuned to your RAM.
-4. **Savings log** in `~/.gemini/antigravity/local_tokens.jsonl` — records every saved token.
+4. **Savings log** in `~/.config/savings-bridge/local_tokens.jsonl` — records every saved token.
 5. **Optional (for offline work without internet):** if you do not have a local model runner yet (such as **Ollama** or **LM Studio**), the installer checks your RAM and tells you what to download. Ollama/LM Studio is never installed automatically — you install it only if you want to.
 
 ---
@@ -49,20 +49,20 @@ Open your terminal and run:
 
 ```bash
 # Savings for the last day (today)
-python3 ~/.gemini/bin/token_stats.py --period day
+python3 ~/.config/savings-bridge/bin/token_stats.py --period day
 
 # Savings for the last week (7 days)
-python3 ~/.gemini/bin/token_stats.py --period week
+python3 ~/.config/savings-bridge/bin/token_stats.py --period week
 
 # Savings for the last month (30 days)
-python3 ~/.gemini/bin/token_stats.py --period month
+python3 ~/.config/savings-bridge/bin/token_stats.py --period month
 ```
 
 ### Web Dashboard & Widget Endpoint
 
 Start the local metrics server:
 ```bash
-python3 ~/.gemini/bin/metrics_server.py --port 4040
+python3 ~/.config/savings-bridge/bin/metrics_server.py --port 4040
 ```
 Available endpoints:
 - `http://127.0.0.1:4040/` — simple browser dashboard with your savings stats
@@ -93,16 +93,16 @@ source ~/.config/savings-bridge/secrets.env
 
 ```bash
 # 1. Text prompt via a free cloud model
-python3 ~/.gemini/bin/local_bridge.py ask -p "Summarize this email into 3 bullet points" -c letter.txt
+python3 ~/.config/savings-bridge/bin/local_bridge.py ask -p "Summarize this email into 3 bullet points" -c letter.txt
 
 # 2. Text prompt locally on your computer (offline)
-python3 ~/.gemini/bin/local_bridge.py ask -m fast -p "Translate this text to Spanish"
+python3 ~/.config/savings-bridge/bin/local_bridge.py ask -m fast -p "Translate this text to Spanish"
 
 # 3. Simple code task (model is chosen automatically for your machine)
-python3 ~/.gemini/bin/local_bridge.py code -m coder -f helper.ts -c types.ts --check -p "Add email validator"
+python3 ~/.config/savings-bridge/bin/local_bridge.py code -m coder -f helper.ts -c types.ts --check -p "Add email validator"
 
 # 4. Check which models were auto-selected for your computer
-python3 ~/.gemini/bin/local_bridge.py models
+python3 ~/.config/savings-bridge/bin/local_bridge.py models
 ```
 
 ---

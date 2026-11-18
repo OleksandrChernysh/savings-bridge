@@ -9,10 +9,16 @@ appends standard records to `~/.gemini/antigravity/local_tokens.jsonl`.
 """
 
 import argparse
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import os
-import pty
+try:
+    import pty
+except ImportError:
+    pty = None
 import re
 import select
 import shutil
@@ -20,12 +26,17 @@ import signal
 import struct
 import subprocess
 import sys
-import termios
+try:
+    import termios
+    import tty
+except ImportError:
+    termios = None
+    tty = None
 import time
-import tty
 from datetime import datetime, timezone
 
-STATS_LOG_PATH = os.path.expanduser("~/.gemini/antigravity/local_tokens.jsonl")
+from bridge_common import STATS_LOG_PATH, append_usage_record
+
 CONFIG_PATH = os.path.expanduser("~/.gemini/antigravity/cli_meter.json")
 SELF_REALPATH = os.path.realpath(__file__)
 
@@ -127,27 +138,16 @@ def log_usage(
 ) -> None:
     if output_tokens <= 0:
         return
-    record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "command": command,
-        "model": model,
-        "output_tokens": output_tokens,
-        "input_tokens": input_tokens,
-        "duration_sec": round(duration_sec, 2),
-    }
-    if os.environ.get("CLI_METER_DRY_RUN") == "1":
-        print(f"[cli_meter] {json.dumps(record)}", file=sys.stderr)
-        return
-    try:
-        os.makedirs(os.path.dirname(STATS_LOG_PATH), exist_ok=True)
-        with open(STATS_LOG_PATH, "a", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.write(json.dumps(record) + "\n")
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-    except Exception:
-        pass
+    append_usage_record(
+        command=command,
+        model=model,
+        output_tokens=output_tokens,
+        input_tokens=input_tokens,
+        duration_sec=duration_sec,
+        log_path=STATS_LOG_PATH,
+        dry_run=os.environ.get("CLI_METER_DRY_RUN") == "1",
+        dry_run_prefix="[cli_meter]",
+    )
 
 
 def run_with_pty(cmd: list[str]) -> tuple[int, bytes]:
@@ -243,6 +243,16 @@ def run_with_pipes(cmd: list[str]) -> tuple[int, bytes, int]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if os.name == "nt":
+        out_b, err_b = proc.communicate(input=stdin_bytes if stdin_arg is not None else None)
+        if out_b:
+            sys.stdout.buffer.write(out_b)
+            sys.stdout.buffer.flush()
+        if err_b:
+            sys.stderr.buffer.write(err_b)
+            sys.stderr.buffer.flush()
+        return proc.returncode, (out_b or b"") + (err_b or b""), len(stdin_bytes)
+
     if stdin_arg is not None and proc.stdin is not None:
         try:
             proc.stdin.write(stdin_bytes)
@@ -329,7 +339,7 @@ def main() -> int:
 
     start = time.monotonic()
     input_bytes = 0
-    if sys.stdin.isatty() and sys.stdout.isatty():
+    if sys.stdin.isatty() and sys.stdout.isatty() and pty is not None and termios is not None and tty is not None:
         rc, output_bytes = run_with_pty([real_bin] + args)
     else:
         rc, output_bytes, input_bytes = run_with_pipes([real_bin] + args)

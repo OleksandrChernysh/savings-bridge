@@ -13,32 +13,23 @@ import json
 import os
 import platform
 import shutil
-import urllib.request
 from pathlib import Path
 
-from model_discovery import build_profile, save_profile
+from model_discovery import build_profile, list_lmstudio_models, list_ollama_models, save_profile
 
 ROOT = Path(__file__).resolve().parent
 PROVIDERS_FILE = ROOT / "providers.json"
 
 
-def probe_json(url: str, timeout: float = 1.5) -> dict | None:
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
 def discover_local() -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
-    ollama = probe_json("http://127.0.0.1:11434/api/tags")
-    if ollama and isinstance(ollama.get("models"), list):
-        found["ollama"] = [m.get("name", "") for m in ollama["models"] if m.get("name")]
+    ollama = [m["name"] for m in list_ollama_models() if m.get("name")]
+    if ollama:
+        found["ollama"] = ollama
 
-    lms = probe_json("http://127.0.0.1:1234/v1/models")
-    if lms and isinstance(lms.get("data"), list):
-        found["lmstudio"] = [m.get("id", "") for m in lms["data"] if m.get("id")]
+    lms = [m["name"] for m in list_lmstudio_models() if m.get("name")]
+    if lms:
+        found["lmstudio"] = lms
     return found
 
 
@@ -51,7 +42,16 @@ def install_files(dry_run: bool = False) -> None:
     if (home / ".codex").exists():
         skill_dirs.append(home / ".codex" / "skills" / "local-coder")
 
-    scripts = ["local_bridge.py", "token_stats.py", "cli_meter.py", "metrics_server.py", "model_discovery.py"]
+    scripts = [
+        "bridge_common.py",
+        "bridge_guards.py",
+        "bridge_backends.py",
+        "local_bridge.py",
+        "token_stats.py",
+        "cli_meter.py",
+        "metrics_server.py",
+        "model_discovery.py",
+    ]
     if dry_run:
         print(f"[DRY-RUN] Would copy {scripts} -> {bin_dir}")
         for sdir in skill_dirs:

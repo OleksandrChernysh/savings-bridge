@@ -12,6 +12,10 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+from bridge_common import fetch_json
+
+_fetch_json = fetch_json
+
 MODELS_CONFIG_PATH = Path.home() / ".config" / "savings-bridge" / "models.json"
 
 
@@ -51,14 +55,6 @@ def get_ram_gb() -> float:
     except Exception:
         pass
     return 0.0
-
-
-def _fetch_json(url: str, timeout: float = 1.5) -> dict | None:
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
 
 
 def list_ollama_models(ollama_host: str = "http://127.0.0.1:11434") -> list[dict]:

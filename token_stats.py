@@ -12,11 +12,13 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
+from bridge_common import STATS_LOG_PATH
+
 TRANSCRIPT_GLOB = os.path.expanduser("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl")
-LOCAL_LOG_PATH = os.path.expanduser("~/.gemini/antigravity/local_tokens.jsonl")
+LOCAL_LOG_PATH = STATS_LOG_PATH
 
 
-def load_cloud_stats(days_limit: int):
+def load_cloud_stats(days_limit: int | None = None):
     daily = defaultdict(lambda: {"inp": 0, "out": 0, "cache": 0, "steps": 0, "convs": set()})
     
     for path in glob.glob(TRANSCRIPT_GLOB):
@@ -42,9 +44,9 @@ def load_cloud_stats(days_limit: int):
                             daily[day]["cache"] += cache
                             daily[day]["steps"] += 1
                             daily[day]["convs"].add(conv_id)
-                    except:
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         pass
-        except:
+        except OSError:
             pass
 
     return daily
@@ -78,9 +80,9 @@ def load_local_stats():
                         daily_local[day]["commands"][cmd] += 1
                         daily_local[day]["cmd_out"][cmd] += out
                         daily_local[day]["cmd_inp"][cmd] += inp
-                    except:
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         pass
-        except:
+        except OSError:
             pass
     return daily_local
 

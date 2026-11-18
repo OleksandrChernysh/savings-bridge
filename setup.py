@@ -48,6 +48,8 @@ def install_files(dry_run: bool = False) -> None:
     skill_dirs = [home / ".gemini" / "antigravity" / "skills" / "local-coder"]
     if (home / ".claude").exists():
         skill_dirs.append(home / ".claude" / "skills" / "local-coder")
+    if (home / ".codex").exists():
+        skill_dirs.append(home / ".codex" / "skills" / "local-coder")
 
     scripts = ["local_bridge.py", "token_stats.py", "cli_meter.py", "metrics_server.py", "model_discovery.py"]
     if dry_run:

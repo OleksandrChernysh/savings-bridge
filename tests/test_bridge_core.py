@@ -12,8 +12,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC_DIR = ROOT / "src"
+for p in (str(ROOT), str(SRC_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from bridge_backends import load_secrets_env, normalize_ollama_url  # noqa: E402
 from bridge_common import append_usage_record  # noqa: E402
@@ -75,11 +77,19 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_scripts_help_and_setup_dry_run(self):
         for script in ("local_bridge.py", "token_stats.py", "cli_meter.py", "metrics_server.py"):
             proc = subprocess.run(
-                [sys.executable, str(ROOT / script), "--help"],
+                [sys.executable, str(SRC_DIR / script), "--help"],
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(proc.returncode, 0, f"{script} --help failed: {proc.stderr}")
+
+        for sub in ("stats", "statistics", "metrics", "meter"):
+            sub_proc = subprocess.run(
+                [sys.executable, str(SRC_DIR / "local_bridge.py"), sub, "--help"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(sub_proc.returncode, 0, f"local_bridge.py {sub} --help failed: {sub_proc.stderr}")
 
         setup_proc = subprocess.run(
             [sys.executable, str(ROOT / "setup.py"), "--dry-run", "--skip-keys"],

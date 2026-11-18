@@ -13,12 +13,16 @@ import json
 import os
 import platform
 import shutil
+import sys
 from pathlib import Path
 
-from model_discovery import build_profile, list_lmstudio_models, list_ollama_models, save_profile
-
 ROOT = Path(__file__).resolve().parent
-PROVIDERS_FILE = ROOT / "providers.json"
+SRC_DIR = ROOT / "src"
+PROVIDERS_FILE = ROOT / "config" / "providers.json"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from model_discovery import build_profile, list_lmstudio_models, list_ollama_models, save_profile
 
 
 def discover_local() -> dict[str, list[str]]:
@@ -60,7 +64,7 @@ def install_files(dry_run: bool = False) -> None:
 
     bin_dir.mkdir(parents=True, exist_ok=True)
     for name in scripts:
-        src = ROOT / name
+        src = SRC_DIR / name
         dst = bin_dir / name
         if dst.exists():
             shutil.copy2(dst, dst.with_suffix(".py.bak"))
@@ -78,25 +82,23 @@ def install_files(dry_run: bool = False) -> None:
     if platform.system() != "Windows":
         local_bin = home / ".local" / "bin"
         local_bin.mkdir(parents=True, exist_ok=True)
-        for cmd_name, target_name in [
-            ("savings-bridge", "local_bridge.py"),
-            ("local-bridge", "local_bridge.py"),
-            ("savings-stats", "token_stats.py"),
-        ]:
-            link = local_bin / cmd_name
-            if link.is_symlink() or link.exists():
-                link.unlink()
-            link.symlink_to(bin_dir / target_name)
-        print(f"Linked PATH cmds  -> {local_bin} (savings-bridge, local-bridge, savings-stats)")
+        for legacy_cmd in ("local-bridge", "savings-stats"):
+            legacy_link = local_bin / legacy_cmd
+            if legacy_link.is_symlink() or legacy_link.exists():
+                legacy_link.unlink()
+        link = local_bin / "savings-bridge"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(bin_dir / "local_bridge.py")
+        print(f"Linked PATH cmd   -> {local_bin / 'savings-bridge'}")
     else:
-        for cmd_name, target_name in [
-            ("savings-bridge", "local_bridge.py"),
-            ("local-bridge", "local_bridge.py"),
-            ("savings-stats", "token_stats.py"),
-        ]:
-            cmd_path = bin_dir / f"{cmd_name}.cmd"
-            cmd_path.write_text(f'@echo off\r\npython "%~dp0{target_name}" %*\r\n', encoding="utf-8")
-        print(f"Created Windows .cmd wrappers -> {bin_dir}")
+        for legacy_cmd in ("local-bridge.cmd", "savings-stats.cmd"):
+            legacy_path = bin_dir / legacy_cmd
+            if legacy_path.exists():
+                legacy_path.unlink()
+        cmd_path = bin_dir / "savings-bridge.cmd"
+        cmd_path.write_text('@echo off\r\npython "%~dp0local_bridge.py" %*\r\n', encoding="utf-8")
+        print(f"Created Windows .cmd wrapper -> {cmd_path}")
         path_entries = [p.strip().lower() for p in os.environ.get("PATH", "").split(os.pathsep) if p.strip()]
         if str(bin_dir).lower() not in path_entries:
             print(f'Add to Windows PATH to run commands globally:\n  setx PATH "%PATH%;{bin_dir}"')
@@ -207,7 +209,8 @@ def main() -> None:
 
     print("\nDone! Quick test:")
     print("  savings-bridge ask -m fast -p 'Say hello in 5 words'")
-    print("  python3 ~/.config/savings-bridge/bin/metrics_server.py   # -> http://127.0.0.1:4040/metrics/summary")
+    print("  savings-bridge stats --period day")
+    print("  savings-bridge metrics   # -> http://127.0.0.1:4040/metrics/summary")
 
 
 if __name__ == "__main__":

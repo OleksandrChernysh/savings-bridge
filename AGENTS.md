@@ -29,10 +29,10 @@ savings-bridge models --json
 
 ## 4. Savings Reports & Widget Endpoint
 - Show user savings by period:
-  - Last day: `savings-stats --period day`
-  - Last week: `savings-stats --period week`
-  - Last month: `savings-stats --period month`
-- HTTP widget endpoint (`metrics_server.py`):
+  - Last day: `savings-bridge stats --period day`
+  - Last week: `savings-bridge stats --period week`
+  - Last month: `savings-bridge stats --period month`
+- HTTP widget endpoint (`savings-bridge metrics`):
   - `GET http://127.0.0.1:4040/metrics/summary?period=day|week|month`
   - `GET http://127.0.0.1:4040/health`
 

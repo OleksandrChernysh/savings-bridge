@@ -11,8 +11,10 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC_DIR = ROOT / "src"
+for p in (str(ROOT), str(SRC_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 import bridge_backends  # noqa: E402
 import bridge_common  # noqa: E402
@@ -78,8 +80,9 @@ class TestSetupMigrationAndWindows(unittest.TestCase):
                 with mock.patch("platform.system", return_value="Windows"):
                     sb_setup.install_files(dry_run=False)
             bin_dir = fake_home / ".config" / "savings-bridge" / "bin"
-            for cmd in ("savings-bridge.cmd", "local-bridge.cmd", "savings-stats.cmd"):
-                self.assertTrue((bin_dir / cmd).exists(), f"Missing {cmd}")
+            self.assertTrue((bin_dir / "savings-bridge.cmd").exists(), "Missing savings-bridge.cmd")
+            for legacy in ("local-bridge.cmd", "savings-stats.cmd"):
+                self.assertFalse((bin_dir / legacy).exists(), f"Legacy {legacy} should not be created")
 
 
 class TestMetricsAndDiscovery(unittest.TestCase):

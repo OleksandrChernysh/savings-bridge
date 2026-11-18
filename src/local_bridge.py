@@ -491,8 +491,23 @@ def handle_models(args):
         print(f"  (none) Recommended for your RAM: ollama pull {rec['fast']} && ollama pull {rec['coder']}")
 
 
+def _run_delegated(script_name: str, main_fn, extra_args: list[str]) -> None:
+    """Delegate subcommand execution to a sibling CLI module preserving argv."""
+    old_argv = sys.argv
+    try:
+        sys.argv = [script_name, *extra_args]
+        rc = main_fn()
+    finally:
+        sys.argv = old_argv
+    if isinstance(rc, int) and rc != 0:
+        sys.exit(rc)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Antigravity Local LLM Bridge (Ollama)")
+    parser = argparse.ArgumentParser(
+        prog="savings-bridge",
+        description="Savings Bridge — unified CLI for local/free LLM offloading, token stats, and metrics",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Subcommand: code
@@ -570,6 +585,44 @@ def main():
     p_models.add_argument("--refresh", action="store_true", help="Re-scan local runtimes and update models.json")
     p_models.add_argument("--save", action="store_true", help="Save discovered profile to models.json")
     p_models.set_defaults(func=handle_models)
+
+    # Subcommand: stats / statistics
+    subparsers.add_parser(
+        "stats",
+        aliases=["statistics"],
+        add_help=False,
+        help="Show token savings & usage statistics",
+    )
+
+    # Subcommand: metrics (HTTP widget server)
+    subparsers.add_parser(
+        "metrics",
+        aliases=["metrics-server", "server"],
+        add_help=False,
+        help="Start HTTP metrics server for widgets/dashboards",
+    )
+
+    # Subcommand: meter (CLI token meter wrapper)
+    subparsers.add_parser(
+        "meter",
+        add_help=False,
+        help="Wrap an external CLI command and meter its token usage",
+    )
+
+    if len(sys.argv) >= 2:
+        cmd = sys.argv[1]
+        if cmd in ("stats", "statistics"):
+            import token_stats
+            _run_delegated("token_stats.py", token_stats.main, sys.argv[2:])
+            return
+        if cmd in ("metrics", "metrics-server", "server"):
+            import metrics_server
+            _run_delegated("metrics_server.py", metrics_server.main, sys.argv[2:])
+            return
+        if cmd == "meter":
+            import cli_meter
+            _run_delegated("cli_meter.py", cli_meter.main, sys.argv[2:])
+            return
 
     args = parser.parse_args()
     args.func(args)

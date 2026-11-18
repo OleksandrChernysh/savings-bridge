@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -104,6 +105,15 @@ def install_files(dry_run: bool = False) -> None:
             print(f'Add to Windows PATH to run commands globally:\n  setx PATH "%PATH%;{bin_dir}"')
     for sdir in skill_dirs:
         print(f"Installed skill   -> {sdir}")
+
+    hooks_dir = ROOT / ".githooks"
+    if (ROOT / ".git").exists() and hooks_dir.exists():
+        if platform.system() != "Windows":
+            for hook in hooks_dir.iterdir():
+                if hook.is_file():
+                    os.chmod(hook, 0o755)
+        subprocess.run(["git", "-C", str(ROOT), "config", "core.hooksPath", ".githooks"], check=False)
+        print("Configured git hooksPath -> .githooks")
 
 
 def migrate_legacy_logs(

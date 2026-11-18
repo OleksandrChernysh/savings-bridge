@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+echo "[savings-bridge] Running unit tests..."
+python3 -m unittest discover -s tests
+
+if command -v agy-check-savings >/dev/null 2>&1; then
+    echo "[agy-check-savings] Running pipeline check..."
+    agy-check-savings
+elif [ -x "$HOME/.local/bin/agy-check-savings" ]; then
+    echo "[agy-check-savings] Running pipeline check..."
+    "$HOME/.local/bin/agy-check-savings"
+fi

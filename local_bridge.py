@@ -9,7 +9,7 @@ Supports:
   - git-changelog: generate release notes / changelog from git log
   - parse-json: extract structured JSON from unstructured text
 
-Automatically logs local & free-cloud token usage to ~/.gemini/antigravity/local_tokens.jsonl
+Automatically logs local & free-cloud token usage to ~/.config/savings-bridge/local_tokens.jsonl
 """
 
 

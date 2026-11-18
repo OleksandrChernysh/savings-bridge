@@ -35,12 +35,12 @@ def discover_local() -> dict[str, list[str]]:
 
 def install_files(dry_run: bool = False) -> None:
     home = Path.home()
-    bin_dir = home / ".gemini" / "bin"
-    skill_dirs = [home / ".gemini" / "antigravity" / "skills" / "local-coder"]
+    bin_dir = home / ".config" / "savings-bridge" / "bin"
+    skill_dirs = [home / ".gemini" / "antigravity" / "skills" / "savings-bridge"]
     if (home / ".claude").exists():
-        skill_dirs.append(home / ".claude" / "skills" / "local-coder")
+        skill_dirs.append(home / ".claude" / "skills" / "savings-bridge")
     if (home / ".codex").exists():
-        skill_dirs.append(home / ".codex" / "skills" / "local-coder")
+        skill_dirs.append(home / ".codex" / "skills" / "savings-bridge")
 
     scripts = [
         "bridge_common.py",
@@ -55,7 +55,7 @@ def install_files(dry_run: bool = False) -> None:
     if dry_run:
         print(f"[DRY-RUN] Would copy {scripts} -> {bin_dir}")
         for sdir in skill_dirs:
-            print(f"[DRY-RUN] Would copy skills/local-coder/SKILL.md -> {sdir}")
+            print(f"[DRY-RUN] Would copy skills/savings-bridge/SKILL.md -> {sdir}")
         return
 
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -73,8 +73,21 @@ def install_files(dry_run: bool = False) -> None:
         sdst = sdir / "SKILL.md"
         if sdst.exists():
             shutil.copy2(sdst, sdst.with_suffix(".md.bak"))
-        shutil.copy2(ROOT / "skills" / "local-coder" / "SKILL.md", sdst)
+        shutil.copy2(ROOT / "skills" / "savings-bridge" / "SKILL.md", sdst)
     print(f"Installed scripts -> {bin_dir}")
+    if platform.system() != "Windows":
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        for cmd_name, target_name in [
+            ("savings-bridge", "local_bridge.py"),
+            ("local-bridge", "local_bridge.py"),
+            ("savings-stats", "token_stats.py"),
+        ]:
+            link = local_bin / cmd_name
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(bin_dir / target_name)
+        print(f"Linked PATH cmds  -> {local_bin} (savings-bridge, local-bridge, savings-stats)")
     for sdir in skill_dirs:
         print(f"Installed skill   -> {sdir}")
 
@@ -143,8 +156,8 @@ def main() -> None:
         configure_keys(dry_run=args.dry_run)
 
     print("\nDone! Quick test:")
-    print("  python3 ~/.gemini/bin/local_bridge.py ask -m fast -p 'Say hello in 5 words'")
-    print("  python3 ~/.gemini/bin/metrics_server.py   # -> http://127.0.0.1:4040/metrics/summary")
+    print("  savings-bridge ask -m fast -p 'Say hello in 5 words'")
+    print("  python3 ~/.config/savings-bridge/bin/metrics_server.py   # -> http://127.0.0.1:4040/metrics/summary")
 
 
 if __name__ == "__main__":

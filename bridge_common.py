@@ -14,7 +14,7 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-STATS_LOG_PATH = os.path.expanduser("~/.gemini/antigravity/local_tokens.jsonl")
+STATS_LOG_PATH = os.path.expanduser("~/.config/savings-bridge/local_tokens.jsonl")
 SECRETS_ENV_PATH = os.path.expanduser("~/.config/savings-bridge/secrets.env")
 
 

@@ -11,7 +11,7 @@ python3 ~/.gemini/bin/local_bridge.py models --json
   - `-m fast` / `-m text` / `-m parser` for short text prompts, summarization, translation, JSON parsing, git commits.
   - `-m coder` for local code generation, helpers, and unit tests.
   - `-m free` / `-m glm-free` / `-m pickle` / `-m nim` for non-sensitive free cloud offloading (`cost: 0`).
-- Never call `ollama run` or `http://127.0.0.1:11434` directly — all calls MUST go through `local_bridge.py` so token usage is logged to `~/.gemini/antigravity/local_tokens.jsonl`.
+- Never call `ollama run` or `http://127.0.0.1:11434` directly — all calls MUST go through `local_bridge.py` so token usage is logged to `~/.config/savings-bridge/local_tokens.jsonl`.
 
 ## 2. Routing: What Goes Where
 - **Text / Chat / Drafting (`ask` / `chat` / `text`):** Offload summarization, translation, drafting replies, and general Q&A via:

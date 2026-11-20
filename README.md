@@ -1,7 +1,5 @@
 # Savings Bridge
 
-[Українська версія](README_UA.md)
-
 A simple assistant that **saves your paid limits (tokens) in Claude, Gemini, or ChatGPT/Codex**.
 
 Instead of spending your expensive primary model on every small task (translations, short replies, text summaries, simple code, error checks), Savings Bridge automatically routes those tasks to **free cloud models** or **local models running on your computer** — and tracks how much you have saved.
@@ -12,7 +10,7 @@ Instead of spending your expensive primary model on every small task (translatio
 
 - **It stays in place and works the same way.** Nothing is removed or disabled.
 - **Complex work stays with your primary model.** Architecture, critical decisions, complex coding, and final verification are still handled by it.
-- **Routine tasks go to the background assistant.** Everyday text chat, summaries, translations, drafts, isolated code modules (≥40 lines), tests, and Git commits run for free; tiny micro-edits (≤15 lines) stay in your primary model to avoid orchestration overhead.
+- **Routine tasks go to the background assistant.** Everyday text chat, summaries, translations, drafts, isolated code modules (≥40 lines), tests, and Git commits run for free; tiny micro-edits (1–10 lines) stay in your primary model to avoid orchestration overhead.
 - **Built-in anti-ping-pong safeguards.** `local_bridge.py code` auto-resolves relative imports into context, runs compiler/syntax `--check` by default, retries fixes locally with type context, and rolls back broken writes on failure so your primary model never wastes tokens cleaning up errors.
 - **Your passwords and private data stay safe.** If a prompt or file contains passwords, keys, or `.env`, the system blocks sending it to external free services — such data is processed only locally on your machine or by your primary model.
 
@@ -71,11 +69,11 @@ Available endpoints:
 
 ---
 
-## Installation (1 Command for macOS, Linux, Windows)
+## Installation (Python 3.9+ — macOS, Linux, Windows)
 
 ```bash
 git clone https://github.com/OleksandrChernysh/savings-bridge.git savings-bridge && cd savings-bridge
-python3 setup.py
+python3 setup.py   # Windows: py -3 setup.py
 ```
 
 Extra options:

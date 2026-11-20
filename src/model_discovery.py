@@ -5,10 +5,13 @@ Inspects system RAM, OS/arch, and installed Ollama / LM Studio models,
 then selects optimal defaults for 'coder', 'text', and 'parser' roles.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import platform
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -104,20 +107,37 @@ def recommend_for_ram(ram_gb: float) -> dict[str, str]:
     return {"fast": "qwen2.5:14b", "coder": "qwen2.5-coder:32b"}
 
 
+def is_embedding_model(name: str, family: str = "") -> bool:
+    """Return True if the model appears to be an embedding/encoder-only model."""
+    n = name.lower()
+    fam = family.lower()
+    return "embed" in n or "bert" in n or "embed" in fam or "bert" in fam
+
+
 def _pick_best(models: list[dict], ram_gb: float, prefer_coder: bool) -> str | None:
-    if not models:
+    eligible = [
+        m
+        for m in models
+        if not is_embedding_model(m.get("name", ""), m.get("family", ""))
+        and not (m.get("provider") == "ollama" and (m.get("size_gb") or 0.0) <= 0.0)
+    ]
+    if not eligible:
         return None
-    # Leave ~35% RAM headroom for OS/IDE; if RAM unknown, allow all
+    # Leave ~35% RAM headroom for OS/IDE; unknown size (e.g. LM Studio) only used if no sized model fits
     max_gb = (ram_gb * 0.65) if ram_gb > 0 else 999.0
-    fitting = [m for m in models if m["size_gb"] == 0.0 or m["size_gb"] <= max_gb] or models
+    fitting = [m for m in eligible if 0.0 < m.get("size_gb", 0.0) <= max_gb]
+    if not fitting:
+        fitting = [m for m in eligible if m.get("provider") == "lmstudio"] or eligible
 
     def score(m: dict) -> tuple[int, float]:
         n = m["name"].lower()
-        is_coder = int("coder" in n or "code" in n or "deepseek" in n)
+        is_coder = int("coder" in n or "code" in n)
+        size = m.get("size_gb") or 0.0
         if prefer_coder:
-            return (is_coder, m["size_gb"])
-        # For fast/text/parser: prefer smaller non-coder or general instruct model
-        return (1 - is_coder, -m["size_gb"] if m["size_gb"] > 0 else 0.0)
+            return (is_coder, size)
+        # For fast/text/parser: prefer non-coder mid-size instruct (~4.5 GB) over tiny models
+        mid_distance = -abs(size - 4.5) if size > 0 else -999.0
+        return (1 - is_coder, mid_distance)
 
     return max(fitting, key=score)["name"]
 
@@ -130,10 +150,10 @@ def build_profile(ollama_host: str | None = None, lms_host: str | None = None) -
     lms_prefixed = [{**m, "name": f"lmstudio/{m['name']}"} for m in lms_models]
     local_pool = ollama_models or lms_prefixed
 
-    coder = _pick_best(local_pool, ram_gb, prefer_coder=True) or "opencode/deepseek-v4.1-flash-free"
-    fast = _pick_best(local_pool, ram_gb, prefer_coder=False) or "opencode/deepseek-v4.1-flash-free"
+    coder = _pick_best(local_pool, ram_gb, prefer_coder=True)
+    fast = _pick_best(local_pool, ram_gb, prefer_coder=False)
 
-    aliases = {
+    aliases: dict[str, str | None] = {
         "fast": fast,
         "text": fast,
         "parser": fast,
@@ -145,6 +165,7 @@ def build_profile(ollama_host: str | None = None, lms_host: str | None = None) -
         aliases["14b"] = coder
 
     return {
+        "created_at": time.time(),
         "hardware": {
             "os": platform.system(),
             "arch": platform.machine(),

@@ -8,6 +8,8 @@ streams output live, estimates output tokens from ANSI-stripped text, and
 appends standard records to `~/.config/savings-bridge/local_tokens.jsonl`.
 """
 
+from __future__ import annotations
+
 import argparse
 try:
     import fcntl
@@ -90,13 +92,20 @@ def resolve_real_binary(tool_name: str) -> str | None:
     if os.path.isabs(tool_name):
         return tool_name if os.path.realpath(tool_name) != SELF_REALPATH else None
 
+    pathext = [""]
+    if os.name == "nt":
+        exts = [e.strip() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e.strip()]
+        pathext = [""] + exts
+
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not directory:
             continue
-        candidate = os.path.join(directory, tool_name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            if os.path.realpath(candidate) != SELF_REALPATH:
-                return candidate
+        for ext in pathext:
+            name = tool_name if (not ext or tool_name.lower().endswith(ext.lower())) else f"{tool_name}{ext}"
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                if os.path.realpath(candidate) != SELF_REALPATH:
+                    return candidate
     return None
 
 
@@ -147,6 +156,7 @@ def log_usage(
         log_path=STATS_LOG_PATH,
         dry_run=os.environ.get("CLI_METER_DRY_RUN") == "1",
         dry_run_prefix="[cli_meter]",
+        estimated=True,
     )
 
 

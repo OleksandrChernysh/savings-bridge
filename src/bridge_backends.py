@@ -10,6 +10,7 @@ except ImportError:
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,9 @@ from bridge_common import (
 
 DEFAULT_CODER_MODEL = "qwen2.5-coder:14b"
 DEFAULT_PARSER_MODEL = "qwen2.5:7b"
+CLOUD_MODEL_PREFIXES = ("opencode/", "nvidia/", "openrouter/", "groq/", "github/")
+LOCAL_ONLY_ALIASES = {"fast", "text", "parser", "coder", "7b", "14b"}
+PROFILE_TTL_SEC = 86400
 
 MODEL_ALIASES = {
     "7b": "qwen2.5:7b",
@@ -49,7 +53,8 @@ OPENAI_COMPAT_PROVIDERS = {
     "lmstudio/": (f"{get_lmstudio_host()}/v1/chat/completions", None, "LM Studio", "lmstudio.ai"),
 }
 
-LOCK_PATH = os.path.join(tempfile.gettempdir(), "local_bridge_ollama.lock")
+_LOCK_NAME = f"local_bridge_ollama_{os.getuid()}.lock" if hasattr(os, "getuid") else "local_bridge_ollama.lock"
+LOCK_PATH = os.path.join(tempfile.gettempdir(), _LOCK_NAME)
 
 
 def load_secrets_env(path: str = SECRETS_ENV_PATH) -> None:
@@ -100,31 +105,67 @@ def _fail(message: str, raise_on_error: bool, retryable: bool = False) -> None:
     sys.exit(1)
 
 
+def _profile_needs_refresh(cached: dict | None) -> bool:
+    if not cached:
+        return True
+    created_at = cached.get("created_at")
+    if not isinstance(created_at, (int, float)) or (time.time() - created_at) > PROFILE_TTL_SEC:
+        return True
+    aliases = cached.get("aliases") or {}
+    for k in LOCAL_ONLY_ALIASES:
+        val = aliases.get(k)
+        if isinstance(val, str) and val.startswith(CLOUD_MODEL_PREFIXES):
+            return True
+    return False
+
+
 def _get_dynamic_profile() -> dict:
-    from model_discovery import build_profile, load_profile
+    from model_discovery import build_profile, load_profile, save_profile
 
     cached = load_profile()
-    if cached:
-        return cached
-    return build_profile(OLLAMA_API)
+    if not _profile_needs_refresh(cached):
+        return cached  # type: ignore[return-value]
+    fresh = build_profile(OLLAMA_API)
+    if cached is not None:
+        try:
+            save_profile(fresh)
+        except Exception:
+            pass
+    return fresh
 
 
-def resolve_model(name: str | None, default: str) -> str:
+def _missing_local_msg(alias: str, profile: dict) -> str:
+    rec = profile.get("recommended_pull") or {}
+    pull_target = rec.get("coder" if alias in ("coder", "14b") else "fast", "qwen2.5:7b")
+    return (
+        f"No local model available for '-m {alias}'. "
+        f"Install one with: ollama pull {pull_target} && savings-bridge models --refresh"
+    )
+
+
+def resolve_model(name: str | None, default: str, raise_on_error: bool = False) -> str:
     """Resolve model alias dynamically via machine profile (models.json / Ollama) + static aliases."""
     profile = _get_dynamic_profile()
     dyn_aliases = profile.get("aliases", {})
     defaults = profile.get("defaults", {})
 
     if not name:
-        if default == DEFAULT_CODER_MODEL and defaults.get("coder"):
-            return defaults["coder"]
-        if default == DEFAULT_PARSER_MODEL and defaults.get("parser"):
-            return defaults["parser"]
-        return default
+        if default.startswith(CLOUD_MODEL_PREFIXES):
+            return default
+        role = "coder" if default == DEFAULT_CODER_MODEL else "parser"
+        resolved = defaults.get(role)
+        if not resolved or (isinstance(resolved, str) and resolved.startswith(CLOUD_MODEL_PREFIXES)):
+            _fail(_missing_local_msg(role, profile), raise_on_error=raise_on_error)
+            return ""
+        return resolved
 
     key = name.strip().lower()
-    if key in dyn_aliases:
-        return dyn_aliases[key]
+    if key in LOCAL_ONLY_ALIASES:
+        resolved = dyn_aliases.get(key)
+        if not resolved or (isinstance(resolved, str) and resolved.startswith(CLOUD_MODEL_PREFIXES)):
+            _fail(_missing_local_msg(key, profile), raise_on_error=raise_on_error)
+            return ""
+        return resolved
     return MODEL_ALIASES.get(key, name.strip())
 
 
@@ -185,9 +226,10 @@ def query_ollama(
     elif isinstance(schema, str):
         payload["format"] = "json"
 
+    ollama_host = get_ollama_host()
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_API}/api/chat",
+        f"{ollama_host}/api/chat",
         data=data,
         headers={"Content-Type": "application/json"},
     )
@@ -196,8 +238,15 @@ def query_ollama(
         with acquire_ollama_lock():
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 res = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        _fail(
+            f"Ollama HTTP {e.code} (model={model}): {body[:500]}",
+            raise_on_error,
+            retryable=e.code in (429, 500, 502, 503, 504),
+        )
     except urllib.error.URLError as e:
-        _fail(f"Error connecting to Ollama at {OLLAMA_API}: {e}", raise_on_error, retryable=True)
+        _fail(f"Error connecting to Ollama at {ollama_host}: {e}", raise_on_error, retryable=True)
     except TimeoutError:
         _fail(f"Ollama request timed out after {timeout}s (model={model}).", raise_on_error, retryable=True)
 
@@ -232,17 +281,35 @@ def query_opencode(
 ) -> str:
     """Query an OpenCode free model via `opencode run --format json` (runs in parallel with Ollama)."""
     combined_prompt = f"{system}\n\n{prompt}".strip() if system else prompt
+    opencode_bin = shutil.which("opencode")
+    if not opencode_bin:
+        _fail("Error: `opencode` CLI not found in PATH.", raise_on_error, retryable=True)
+    max_argv = 24000 if os.name == "nt" else 100000
+    if len(combined_prompt) > max_argv:
+        _fail(
+            f"Prompt ({len(combined_prompt)} chars) exceeds OS argv limit ({max_argv}) for `opencode` CLI.",
+            raise_on_error,
+            retryable=True,
+        )
+    scrubbed_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"OPENROUTER_API_KEY", "NVIDIA_API_KEY", "GROQ_API_KEY", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"}
+    }
     start = time.monotonic()
     try:
         proc = subprocess.run(
-            ["opencode", "run", "-m", model, "--format", "json", combined_prompt],
+            [opencode_bin, "run", "-m", model, "--format", "json", combined_prompt],
             cwd=tempfile.gettempdir(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=scrubbed_env,
             timeout=timeout,
         )
-    except FileNotFoundError:
-        _fail("Error: `opencode` CLI not found in PATH.", raise_on_error, retryable=True)
+    except OSError as exc:
+        _fail(f"Error running `opencode` CLI: {exc}", raise_on_error, retryable=True)
     except subprocess.TimeoutExpired:
         _fail(f"OpenCode request timed out after {timeout}s (model={model}).", raise_on_error, retryable=True)
 
@@ -297,6 +364,8 @@ def query_openai_compat(
 ) -> str:
     """Query any OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, Groq, GitHub Models, LM Studio)."""
     api_url, env_var, display_name, setup_url = OPENAI_COMPAT_PROVIDERS[prefix]
+    if prefix == "lmstudio/":
+        api_url = f"{get_lmstudio_host()}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
     if env_var:
         api_key = os.environ.get(env_var, "").strip()
@@ -349,7 +418,9 @@ def query_openai_compat(
 
     duration_sec = time.monotonic() - start
     choices = res.get("choices") or []
-    content = (choices[0].get("message") or {}).get("content", "") if choices else ""
+    first_choice = choices[0] if choices else {}
+    finish_reason = first_choice.get("finish_reason")
+    content = ((first_choice.get("message") or {}).get("content") or "") if choices else ""
     usage = res.get("usage") or {}
     log_local_usage(
         command=command,
@@ -358,6 +429,12 @@ def query_openai_compat(
         prompt_eval_count=usage.get("prompt_tokens") or 0,
         duration_sec=duration_sec,
     )
+    if finish_reason == "length":
+        _fail(
+            f"{display_name} output truncated (finish_reason=length, model={remote_model}).",
+            raise_on_error,
+            retryable=False,
+        )
     return content.strip()
 
 
@@ -373,13 +450,16 @@ def build_fallback_chain(command: str, primary_model: str) -> list[str]:
     if os.environ.get("NVIDIA_API_KEY", "").strip():
         chain.append(MODEL_ALIASES["nim"])
 
-    local_default = (
-        resolve_model("coder", DEFAULT_CODER_MODEL)
-        if command in ("code", "code-repair")
-        else resolve_model("fast", DEFAULT_PARSER_MODEL)
-    )
-    if not local_default.startswith(cloud_prefixes):
-        chain.append(local_default)
+    try:
+        local_default = (
+            resolve_model("coder", DEFAULT_CODER_MODEL, raise_on_error=True)
+            if command in ("code", "code-repair")
+            else resolve_model("fast", DEFAULT_PARSER_MODEL, raise_on_error=True)
+        )
+        if local_default and not local_default.startswith(cloud_prefixes):
+            chain.append(local_default)
+    except BackendError:
+        pass
 
     seen = {primary_model}
     deduped: list[str] = []
@@ -402,6 +482,7 @@ def _query_single_backend(
     raise_on_error: bool,
 ) -> str:
     if model.startswith("opencode/"):
+        print(f"[backend] {model} -> opencode CLI", file=sys.stderr)
         return query_opencode(
             command=command,
             model=model,
@@ -410,8 +491,9 @@ def _query_single_backend(
             timeout=timeout,
             raise_on_error=raise_on_error,
         )
-    for prefix in OPENAI_COMPAT_PROVIDERS:
+    for prefix, (endpoint_url, _, label, _) in OPENAI_COMPAT_PROVIDERS.items():
         if model.startswith(prefix):
+            print(f"[backend] {model} -> {label} ({endpoint_url})", file=sys.stderr)
             return query_openai_compat(
                 command=command,
                 model=model,
@@ -422,6 +504,7 @@ def _query_single_backend(
                 timeout=timeout,
                 raise_on_error=raise_on_error,
             )
+    print(f"[backend] {model} -> Ollama ({get_ollama_host()})", file=sys.stderr)
     return query_ollama(
         command=command,
         model=model,
@@ -445,11 +528,12 @@ def query_backend(
     temperature: float = 0.2,
     timeout: int = 300,
     allow_fallback: bool = True,
+    raise_on_error: bool = False,
 ) -> str:
     """Route to OpenCode CLI, OpenAI-compatible APIs, or Ollama with automatic fallback on 429/outage."""
     if not allow_fallback:
         return _query_single_backend(
-            command, model, prompt, system, schema, num_ctx, temperature, timeout, raise_on_error=False
+            command, model, prompt, system, schema, num_ctx, temperature, timeout, raise_on_error=raise_on_error
         )
 
     candidates = [model] + build_fallback_chain(command, model)
@@ -466,5 +550,6 @@ def query_backend(
             next_model = candidates[idx + 1]
             print(f"[fallback] {candidate} failed ({exc}); trying {next_model}...", file=sys.stderr)
 
-    print(str(last_error) if last_error else "Backend error.", file=sys.stderr)
-    sys.exit(1)
+    err_msg = str(last_error) if last_error else "Backend error."
+    _fail(err_msg, raise_on_error=raise_on_error)
+    return ""

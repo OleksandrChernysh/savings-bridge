@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -41,15 +42,21 @@ PLACEHOLDER_PATTERNS = [
 SENSITIVE_FILENAME_PATTERNS = [
     re.compile(r"(^|/)\.env(\.|$)", re.IGNORECASE),
     re.compile(r"\.(pem|key|p12|pfx|keystore|p8|mobileprovision)$", re.IGNORECASE),
-    re.compile(r"(^|/)(id_rsa|id_ed25519|credentials\.json|secrets\.json|GoogleService-Info\.plist)$", re.IGNORECASE),
+    re.compile(r"(^|/)(id_rsa|id_ed25519|credentials\.json|secrets\.json|secrets\.env|GoogleService-Info\.plist)$", re.IGNORECASE),
 ]
 
 SECRET_CONTENT_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
-    re.compile(r"\b(sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b"),
     re.compile(
-        r"(?im)^\s*(?:export\s+)?[A-Z0-9_]*(API_KEY|SECRET|PASSWORD|PRIVATE_KEY|SEED_PHRASE|MNEMONIC|AUTH_TOKEN|ACCESS_TOKEN)\s*[:=]\s*['\"]?(?!\s*(?:['\"]|$|\$\{|process\.env|your_|changeme|example|dummy|test))[A-Za-z0-9_./+=-]{8,}"
+        r"\b(sk-(?:proj-|ant-api\d+-|or-v1-|live_|test_)?[A-Za-z0-9_-]{16,}"
+        r"|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}"
+        r"|gsk_[A-Za-z0-9]{20,}|nvapi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b"
     ),
+    re.compile(
+        r"(?im)(?:^|[+\-\s.;,\"'])(?:export\s+)?[A-Za-z0-9_.]*(?:API_?KEY|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|SEED_PHRASE|MNEMONIC|AUTH_TOKEN|ACCESS_TOKEN)[A-Za-z0-9_]*[\"']?\s*[:=]\s*['\"]?(?!\s*(?:['\"]|$|\$\{|process\.env|os\.environ|your_|changeme|example|dummy|test))\S{8,}"
+    ),
+    re.compile(r"https?://[^\s:/@]+:[^\s/@]{4,}@[^\s/]+"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"),
 ]
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -125,7 +132,10 @@ EXT_TO_LANGUAGE: dict[str, str] = {
     ".scss": "web",
 }
 
-_TS_IMPORT_RE = re.compile(r"""(?:import\s+.*?\s+from\s+|require\s*\(\s*)['"](\.\.?/[^'"]+)['"]""")
+_TS_IMPORT_RE = re.compile(
+    r"""(?:(?:import|export)\s+(?:[^;]*?\s+from\s+)?|require\s*\(\s*)['"](\.\.?/[^'"]+)['"]""",
+    re.DOTALL,
+)
 _PY_IMPORT_RE = re.compile(r"""^\s*from\s+(\.[A-Za-z0-9_.]*)\s+import\s+""", re.MULTILINE)
 
 
@@ -135,14 +145,15 @@ def strip_markdown_code(content: str) -> str:
 
     lines = cleaned.splitlines()
     if lines and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
-        return "\n".join(lines[1:-1]).strip() + "\n"
+        inner = "\n".join(lines[1:-1]).strip()
+        return (inner + "\n") if inner else ""
 
     fenced_blocks = re.findall(r"```[^\n]*\n(.*?)```", cleaned, flags=re.DOTALL)
     if fenced_blocks:
-        best_block = max(fenced_blocks, key=len)
-        return best_block.strip() + "\n"
+        best_block = max(fenced_blocks, key=len).strip()
+        return (best_block + "\n") if best_block else ""
 
-    return cleaned + "\n"
+    return (cleaned + "\n") if cleaned else ""
 
 
 def detect_truncation_or_placeholders(existing: str, generated: str) -> str | None:
@@ -187,7 +198,22 @@ def find_project_root(start_path: str | None, marker: str) -> str | None:
 
 def _run_subprocess_check(cmd: list[str], cwd: str | None, label: str, errors: list[str]) -> None:
     """Execute a compiler/linter check and record formatted error output on failure."""
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    resolved_bin = shutil.which(cmd[0]) if not os.path.isabs(cmd[0]) else cmd[0]
+    if not resolved_bin:
+        print(f"Warning: {label} unavailable ({cmd[0]} not found); skipping check.", file=sys.stderr)
+        return
+    try:
+        proc = subprocess.run(
+            [resolved_bin, *cmd[1:]],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        print(f"Warning: {label} unavailable ({exc}); skipping check.", file=sys.stderr)
+        return
     if proc.returncode != 0:
         err = "\n".join(p for p in [proc.stdout.strip(), proc.stderr.strip()] if p)
         print(f"{label} failed:", file=sys.stderr)
@@ -199,11 +225,49 @@ def _run_subprocess_check(cmd: list[str], cwd: str | None, label: str, errors: l
         print(f"{label} passed{loc}.")
 
 
+def _scrubbed_child_env() -> dict[str, str]:
+    secret_keys = {
+        "OPENROUTER_API_KEY",
+        "NVIDIA_API_KEY",
+        "GROQ_API_KEY",
+        "GITHUB_TOKEN",
+        "OPENCODE_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+    }
+    return {k: v for k, v in os.environ.items() if k not in secret_keys}
+
+
+def get_tsc_baseline(target_file: str | None) -> set[str]:
+    """Capture pre-existing tsc diagnostic lines before writing target_file."""
+    ts_dir = find_project_root(target_file, "tsconfig.json")
+    npx_bin = shutil.which("npx")
+    if not ts_dir or not npx_bin:
+        return set()
+    try:
+        proc = subprocess.run(
+            [npx_bin, "--no-install", "tsc", "--noEmit"],
+            cwd=ts_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return set()
+    if proc.returncode == 0:
+        return set()
+    out = "\n".join(p for p in (proc.stdout, proc.stderr) if p)
+    return {ln.strip() for ln in out.splitlines() if ln.strip()}
+
+
 def run_verify(
     verify_cmd: str | None,
     tsc: bool,
     target_file: str | None,
     check: bool = False,
+    baseline_tsc: set[str] | None = None,
 ) -> tuple[int, str]:
     """Run language-aware --check / --tsc and/or custom --verify command; return (exit_code, error_output)."""
     errors: list[str] = []
@@ -214,7 +278,17 @@ def run_verify(
         if not ts_dir:
             print("Warning: TypeScript check requested but no tsconfig.json found; skipping.", file=sys.stderr)
         else:
-            _run_subprocess_check(["npx", "tsc", "--noEmit"], ts_dir, "TypeScript check (npx tsc --noEmit)", errors)
+            tsc_errors: list[str] = []
+            _run_subprocess_check(["npx", "--no-install", "tsc", "--noEmit"], ts_dir, "TypeScript check (npx tsc --noEmit)", tsc_errors)
+            if tsc_errors and baseline_tsc:
+                new_lines = [
+                    ln for ln in tsc_errors[0].splitlines()[1:]
+                    if ln.strip() and ln.strip() not in baseline_tsc
+                ]
+                if new_lines:
+                    errors.append("TypeScript check (npx tsc --noEmit) failed:\n" + "\n".join(new_lines))
+            else:
+                errors.extend(tsc_errors)
     elif check and check_kind == "swift":
         pkg_dir = find_project_root(target_file, "Package.swift")
         if pkg_dir:
@@ -227,7 +301,15 @@ def run_verify(
         _run_subprocess_check([sys.executable, "-m", "py_compile", target_file], None, "Python syntax check (py_compile)", errors)
 
     if verify_cmd and not errors:
-        proc = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True)
+        proc = subprocess.run(
+            verify_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_scrubbed_child_env(),
+        )
         if proc.returncode != 0:
             err = "\n".join(p for p in [proc.stdout.strip(), proc.stderr.strip()] if p)
             print(f"Verification failed ({verify_cmd}):", file=sys.stderr)
@@ -247,25 +329,31 @@ def detect_secrets(file_paths: list[str], texts: list[str]) -> str | None:
     for path in file_paths:
         if not path:
             continue
+        norm_path = path.replace("\\", "/")
+        basename = norm_path.rsplit("/", 1)[-1]
         for pat in SENSITIVE_FILENAME_PATTERNS:
-            if pat.search(path):
-                return f"sensitive file '{path}' cannot be sent to external OpenCode models"
+            if pat.search(norm_path) or pat.search(basename):
+                return f"sensitive file '{path}' cannot be sent to external cloud models"
     for text in texts:
         if not text:
             continue
-        for pat in SECRET_CONTENT_PATTERNS:
-            if pat.search(text):
-                return f"detected potential secret/key matching {pat.pattern}"
+        normalized_diff = re.sub(r"(?m)^[+-]", "", text)
+        for candidate in (text, normalized_diff):
+            for pat in SECRET_CONTENT_PATTERNS:
+                if pat.search(candidate):
+                    return f"detected potential secret/key matching {pat.pattern}"
     return None
 
 
-def _resolve_scope_limits(model: str) -> dict:
+def _resolve_scope_limits(model: str, tier: str | None = None) -> dict:
     """Resolve scope limits for explicit, cloud-free, or dynamically discovered local models."""
     if model.startswith(FREE_CLOUD_PREFIXES):
         return CLOUD_FREE_DEFAULT_LIMITS
     if model in MODEL_LIMITS:
         return MODEL_LIMITS[model]
     low = model.lower()
+    if tier == "coder" or "coder" in low:
+        return MODEL_LIMITS["qwen2.5-coder:14b"]
     if any(tag in low for tag in (":1b", ":3b", ":7b", ":8b", "3b-", "7b-", "8b-")):
         return MODEL_LIMITS["qwen2.5:7b"]
     return MODEL_LIMITS["qwen2.5-coder:14b"]
@@ -318,8 +406,14 @@ def resolve_local_imports(
         if os.path.isfile(raw_path):
             candidates.append(raw_path)
         else:
-            for ext in (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js"):
-                p = raw_path + ext
+            stem, rel_ext = os.path.splitext(raw_path)
+            ts_mapped = []
+            if rel_ext in (".js", ".jsx", ".mjs", ".cjs"):
+                ts_mapped = [stem + ".ts", stem + ".tsx", stem + ".mts", stem + ".cts"]
+            probe_list = ts_mapped + [
+                raw_path + ext for ext in (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx", "/index.js")
+            ]
+            for p in probe_list:
                 if os.path.isfile(p):
                     candidates.append(p)
                     break

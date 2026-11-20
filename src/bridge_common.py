@@ -27,6 +27,8 @@ def append_usage_record(
     log_path: str = STATS_LOG_PATH,
     dry_run: bool = False,
     dry_run_prefix: str = "[savings-bridge]",
+    outcome: str = "accepted",
+    estimated: bool = False,
 ) -> None:
     """Append a single token-usage record to local_tokens.jsonl (flock-safe on POSIX)."""
     record = {
@@ -36,7 +38,10 @@ def append_usage_record(
         "output_tokens": output_tokens,
         "input_tokens": input_tokens,
         "duration_sec": round(duration_sec, 2),
+        "outcome": outcome,
     }
+    if estimated:
+        record["estimated"] = True
     if dry_run:
         print(f"{dry_run_prefix} {json.dumps(record)}", file=sys.stderr)
         return
@@ -53,6 +58,31 @@ def append_usage_record(
                     fcntl.flock(f, fcntl.LOCK_UN)
             else:
                 f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
+def mark_last_usage_outcome(outcome: str, log_path: str = STATS_LOG_PATH) -> None:
+    """Update the outcome field of the most recent usage record (e.g. 'refused' or 'rolled_back')."""
+    if not os.path.exists(log_path):
+        return
+    try:
+        with open(log_path, "r+", encoding="utf-8") as f:
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                lines = f.read().splitlines()
+                if not lines:
+                    return
+                last = json.loads(lines[-1])
+                last["outcome"] = outcome
+                lines[-1] = json.dumps(last)
+                f.seek(0)
+                f.truncate()
+                f.write("\n".join(lines) + "\n")
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_UN)
     except Exception:
         pass
 

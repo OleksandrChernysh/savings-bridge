@@ -20,12 +20,12 @@ Run `savings-bridge models --json` to inspect host RAM, installed local models (
 | **`-m fast`** (`7b` legacy) | Auto-selected small local model (e.g. `qwen2.5:3b`/`7b`) | Pure helpers, validators (10–40 lines), `parse-json`, `git-commit`, small sensitive helpers | 60 lines | 300 lines / 12k chars | 1,500 chars |
 | **`-m coder`** (`14b` legacy) | Auto-selected local coder model (e.g. `qwen2.5-coder:7b`/`14b`, `lmstudio/*`) | **All secret/auth/key code**, offline work, fallback on 429/timeout | 150 lines | 900 lines / 36k chars | 3,000 chars |
 | **`-m free`** / **`glm-free`** | `opencode/deepseek-v4.1-flash-free`, `glm-5.3-flash-free` (`cost: 0`) | Primary non-sensitive TS/React services, hooks, unit tests; small/medium Swift (`Codable` DTOs, helpers, `XCTest`) (40–150 lines) | 200 lines | 1,200 lines / 48k chars | 4,000 chars |
-| **`-m pickle`** | `opencode/big-pickle` (`cost: 0`) | Complex non-sensitive TS/Swift modules, ViewModels, isolated SwiftUI subviews, edge-case logic (80–180 lines), default `review` pre-pass | 200 lines | 1,200 lines / 48k chars | 4,000 chars |
+| **`-m pickle`** | `opencode/big-pickle` (`cost: 0`) | Complex non-sensitive TS/Swift modules, ViewModels, isolated SwiftUI subviews, edge-case logic (80–180 lines), optional cloud `review` (`-m pickle` / `--allow-cloud`) | 200 lines | 1,200 lines / 48k chars | 4,000 chars |
 | **`-m openrouter`** / **`nim`** | `openrouter/openrouter/free`, `nvidia/nvidia/nemotron-3-ultra-550b-a55b`, `groq/*`, `github/*` | Free-tier OpenAI-compatible cloud alternatives & fallback on 429 (`--timeout 180` for large NIM models) | 200 lines | 1,200 lines / 48k chars | 4,000 chars |
 | **Cloud (Primary)** | Your primary paid model (Claude / Gemini / GPT / Codex / etc.) | Architecture, decomposition, `types/*.ts` & `Models/*.swift`/`Protocols/*.swift`, wiring, micro-edits (1–10 lines), sensitive Swift, newest Apple SDK APIs, final verify | — | — | — |
 
 ## Security & Volume Rules for Free Cloud (`opencode/*`, `openrouter/*`, `nvidia/*`, `groq/*`, `github/*`)
-- **Volume:** Ideal for **40–200 line** non-sensitive TS modules/tests (`--append` for larger files, max 1–2 concurrent `opencode/*` calls to avoid 429; fallback chain: `free`/`glm-free` → `pickle` → `openrouter`/`nim` → `-m coder`).
+- **Volume:** Ideal for **40–200 line** non-sensitive TS modules/tests (`--append` for larger files, max 1–2 concurrent `opencode/*` calls to avoid 429; fallback chain: `openrouter` (if key) → `nim` (if key) → local `-m coder`/`-m fast`).
 - **Zero-Secrets Policy (`exit 3`):** NEVER send `.env*`, `*.pem`/`*.key`, API keys, crypto/exchange keys, seed phrases, passwords, or auth tokens to external free cloud models — keep all secret-adjacent code on local Ollama/LM Studio (`-m fast` / `-m coder`) or your Primary Cloud model. `savings-bridge` auto-loads keys from `~/.config/savings-bridge/secrets.env`.
 
 ## Mandatory Workflow
@@ -62,8 +62,8 @@ savings-bridge git-changelog --range HEAD~10..HEAD [-o CHANGELOG.md]
 # 6. Parse unstructured text to JSON (uses fast/parser by default)
 savings-bridge parse-json -i posts.txt -s schema.json -o result.json
 
-# 7. Pre-review non-sensitive diff (uses pickle by default; sensitive diffs -> Primary Cloud model)
-savings-bridge review -m pickle
+# 7. Pre-review diff (defaults to local fast; use -m pickle or --allow-cloud for free cloud; sensitive diffs -> Primary Cloud model)
+savings-bridge review
 
 # 8. Text prompts, drafting, summarization, translation (saves cloud chat tokens)
 savings-bridge ask -m free -p "Summarize this spec in 5 bullets" -c docs/spec.md

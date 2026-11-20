@@ -57,10 +57,25 @@ class TestDetectSecrets(unittest.TestCase):
         self.assertIsNotNone(detect_secrets([".env"], ["hello"]))
         self.assertIsNotNone(detect_secrets(["/tmp/server.key"], ["hello"]))
         self.assertIsNotNone(detect_secrets(["config/id_rsa"], ["hello"]))
+        self.assertIsNotNone(detect_secrets([r"config\.env"], ["hello"]))
+        self.assertIsNotNone(detect_secrets([r"C:\app\.env.local"], ["hello"]))
+        self.assertIsNotNone(detect_secrets(["~/.config/savings-bridge/secrets.env"], ["hello"]))
 
     def test_blocks_secret_literals(self):
         self.assertIsNotNone(detect_secrets(["app.py"], ["OPENAI_API_KEY = 'sk-1234567890abcdefghij1234'"]))
         self.assertIsNotNone(detect_secrets(["app.py"], ["-----BEGIN RSA PRIVATE KEY-----"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["sk-proj-abcdefghijklmnopqrstuvwxyz1234"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["sk-or-v1-abcdefghijklmnopqrstuvwxyz1234"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["gsk_abcdefghijklmnopqrstuvwxyz1234"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["nvapi-abcdefghijklmnopqrstuvwxyz1234"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["github_pat_abcdefghijklmnopqrstuvwxyz1234"]))
+        self.assertIsNotNone(detect_secrets(["app.ts"], ['+const DB_PASSWORD = "Pr0d!Pass#2026";']))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["+self.password = 'P@ssw0rd!2026'"]))
+        self.assertIsNotNone(detect_secrets(["app.json"], ['"password": "SuperSecret!99"']))
+        self.assertIsNotNone(detect_secrets(["app.env"], ["AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCY"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["https://user:s3cr3tpass@db.example.com/app"]))
+        self.assertIsNotNone(detect_secrets(["app.py"], ["Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"]))
 
     def test_allows_safe_placeholders(self):
         self.assertIsNone(detect_secrets(["app.py"], ["API_KEY = process.env.API_KEY"]))
@@ -77,6 +92,7 @@ class TestScopeLimits(unittest.TestCase):
         big_file = "\n".join(f"line {i}" for i in range(100))
         self.assertIsNotNone(check_scope_limits("qwen2.5:7b", "add fn", big_file, [], append=False))
         self.assertIsNone(check_scope_limits("qwen2.5:7b", "add fn", big_file, [], append=True))
+        self.assertIsNone(check_scope_limits("qwen2.5-coder:7b", "add fn", big_file, [], append=False))
 
 
 class TestLanguageAndImports(unittest.TestCase):
@@ -101,6 +117,21 @@ class TestLanguageAndImports(unittest.TestCase):
             self.assertEqual(len(resolved), 1)
             self.assertEqual(os.path.realpath(resolved[0][0]), str(helper.resolve()))
             self.assertEqual(resolved[0][1], "VALUE = 42\n")
+
+    def test_resolve_local_ts_multiline_reexport_and_js_ext(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp)
+            (pkg / "types.ts").write_text("export type Foo = string;\n", encoding="utf-8")
+            (pkg / "bar.ts").write_text("export const BAR = 1;\n", encoding="utf-8")
+            main_ts = pkg / "index.ts"
+            src = (
+                "import {\n  Foo,\n} from './types.js';\n"
+                "export { BAR } from './bar';\n"
+            )
+            main_ts.write_text(src, encoding="utf-8")
+            resolved = resolve_local_imports(str(main_ts), src, set(), max_extra_chars=1000)
+            names = {Path(p).name for p, _ in resolved}
+            self.assertEqual(names, {"types.ts", "bar.ts"})
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from bridge_common import get_lmstudio_host, get_ollama_host
-from token_stats import load_cloud_stats, load_local_stats
+from token_stats import get_cutoff_day, load_cloud_stats, load_local_stats
 
 
 def check_url(url: str, timeout: float = 1.0) -> bool:
@@ -27,12 +27,11 @@ def check_url(url: str, timeout: float = 1.0) -> bool:
 
 
 def build_summary(days: int = 10) -> dict:
+    cutoff = get_cutoff_day(days)
     cloud_stats = load_cloud_stats(days)
-    local_stats = load_local_stats()
+    local_stats = load_local_stats(days)
 
-    all_days = sorted(set(list(cloud_stats.keys()) + list(local_stats.keys())))
-    if days > 0 and len(all_days) > days:
-        all_days = all_days[-days:]
+    all_days = sorted(d for d in set(list(cloud_stats.keys()) + list(local_stats.keys())) if not cutoff or d >= cutoff)
 
     by_day = []
     by_command: dict[str, int] = {}
@@ -66,12 +65,12 @@ def build_summary(days: int = 10) -> dict:
                 "local_calls": lcalls,
                 "local_input_tokens": linp,
                 "local_output_tokens": lout,
-                "saved_output_pct": round((lout / denom * 100) if denom > 0 else 0.0, 1),
+                "saved_output_pct": round((lout / denom * 100), 1) if gout > 0 else None,
             }
         )
 
     tot_denom = tot_g_out + tot_l_out
-    today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_key = datetime.now().strftime("%Y-%m-%d")
     today_entry = next((d for d in by_day if d["date"] == today_key), None)
 
     return {
@@ -83,7 +82,7 @@ def build_summary(days: int = 10) -> dict:
             "local_calls": tot_l_calls,
             "local_input_tokens": tot_l_inp,
             "local_output_tokens": tot_l_out,
-            "saved_output_pct": round((tot_l_out / tot_denom * 100) if tot_denom > 0 else 0.0, 1),
+            "saved_output_pct": round((tot_l_out / tot_denom * 100), 1) if tot_g_out > 0 else None,
         },
         "chat_savings": {
             "calls": chat_calls,
@@ -133,7 +132,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

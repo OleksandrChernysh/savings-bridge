@@ -3,9 +3,11 @@
 Cross-platform onboarding & setup for Savings Bridge (macOS / Linux / Windows).
 - Discovers local Ollama / LM Studio models
 - Displays provider login / free-tier links from providers.json
-- Installs scripts to ~/.config/savings-bridge/bin/ (and PATH links in ~/.local/bin/) and skill to ~/.gemini/antigravity/skills/
+- Installs scripts to ~/.config/savings-bridge/bin/ (and PATH links in ~/.local/bin/) and skill to ~/.gemini/config/skills/
 - Saves API keys securely (chmod 600 on POSIX) to ~/.config/savings-bridge/secrets.env
 """
+
+from __future__ import annotations
 
 import argparse
 import getpass
@@ -16,6 +18,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+if sys.version_info < (3, 9):
+    sys.exit("Python 3.9+ is required to run Savings Bridge.")
 
 ROOT = Path(__file__).resolve().parent
 SRC_DIR = ROOT / "src"
@@ -41,7 +46,7 @@ def discover_local() -> dict[str, list[str]]:
 def install_files(dry_run: bool = False) -> None:
     home = Path.home()
     bin_dir = home / ".config" / "savings-bridge" / "bin"
-    skill_dirs = [home / ".gemini" / "antigravity" / "skills" / "savings-bridge"]
+    skill_dirs = [home / ".gemini" / "config" / "skills" / "savings-bridge"]
     if (home / ".claude").exists():
         skill_dirs.append(home / ".claude" / "skills" / "savings-bridge")
     if (home / ".codex").exists():
@@ -85,24 +90,33 @@ def install_files(dry_run: bool = False) -> None:
         local_bin.mkdir(parents=True, exist_ok=True)
         for legacy_cmd in ("local-bridge", "savings-stats"):
             legacy_link = local_bin / legacy_cmd
-            if legacy_link.is_symlink() or legacy_link.exists():
+            if legacy_link.is_symlink():
                 legacy_link.unlink()
         link = local_bin / "savings-bridge"
-        if link.is_symlink() or link.exists():
+        if link.is_symlink():
+            link.unlink()
+        elif link.exists():
+            shutil.copy2(link, link.with_suffix(".bak"))
             link.unlink()
         link.symlink_to(bin_dir / "local_bridge.py")
         print(f"Linked PATH cmd   -> {local_bin / 'savings-bridge'}")
+        path_entries = [os.path.realpath(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p.strip()]
+        if os.path.realpath(str(local_bin)) not in path_entries:
+            print(f'Add to PATH (~/.zshrc or ~/.bashrc): export PATH="$HOME/.local/bin:$PATH"')
     else:
         for legacy_cmd in ("local-bridge.cmd", "savings-stats.cmd"):
             legacy_path = bin_dir / legacy_cmd
             if legacy_path.exists():
                 legacy_path.unlink()
         cmd_path = bin_dir / "savings-bridge.cmd"
-        cmd_path.write_text('@echo off\r\npython "%~dp0local_bridge.py" %*\r\n', encoding="utf-8")
+        cmd_path.write_text('@echo off\r\npy -3 "%~dp0local_bridge.py" %*\r\n', encoding="utf-8")
         print(f"Created Windows .cmd wrapper -> {cmd_path}")
         path_entries = [p.strip().lower() for p in os.environ.get("PATH", "").split(os.pathsep) if p.strip()]
         if str(bin_dir).lower() not in path_entries:
-            print(f'Add to Windows PATH to run commands globally:\n  setx PATH "%PATH%;{bin_dir}"')
+            print(
+                "Add to Windows User PATH (PowerShell):\n"
+                f'  [Environment]::SetEnvironmentVariable("PATH", [Environment]::GetEnvironmentVariable("PATH", "User") + ";{bin_dir}", "User")'
+            )
     for sdir in skill_dirs:
         print(f"Installed skill   -> {sdir}")
 
@@ -153,14 +167,45 @@ def migrate_legacy_logs(
     return len(added)
 
 
-def configure_keys(dry_run: bool = False) -> None:
+SUPPORTED_CLOUD_IDS = {"openrouter", "nvidia", "groq", "github", "opencode"}
+
+
+def _parse_existing_secrets(secrets_path: Path) -> dict[str, str]:
+    existing: dict[str, str] = {}
+    if not secrets_path.exists():
+        return existing
+    try:
+        for raw in secrets_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                try:
+                    val = json.loads(val) if val.startswith('"') else val[1:-1]
+                except Exception:
+                    val = val[1:-1]
+            if key:
+                existing[key] = val
+    except Exception:
+        pass
+    return existing
+
+
+def configure_keys(dry_run: bool = False, secrets_path: Path | None = None) -> None:
     providers = json.loads(PROVIDERS_FILE.read_text(encoding="utf-8"))["providers"]
-    secrets_path = Path.home() / ".config" / "savings-bridge" / "secrets.env"
-    entries: list[str] = []
+    secrets_path = secrets_path or (Path.home() / ".config" / "savings-bridge" / "secrets.env")
+    new_keys: dict[str, str] = {}
 
     print("\n--- Cloud Providers (press Enter to skip) ---")
     for p in providers:
-        if p["type"] != "cloud":
+        if p["type"] != "cloud" or p.get("id") not in SUPPORTED_CLOUD_IDS:
             continue
         tag = "FREE TIER" if p.get("free_tier") else "PAID"
         print(f"\n• {p['name']} [{tag}]")
@@ -168,21 +213,32 @@ def configure_keys(dry_run: bool = False) -> None:
         print(f"  Login/Keys: {p['auth_url']}")
         val = getpass.getpass(f"  Enter {p['env_var']} (hidden, Enter to skip): ").strip()
         if val:
-            entries.append(f"export {p['env_var']}={json.dumps(val)}")
+            new_keys[p["env_var"]] = val
 
-    if not entries:
-        print("\nNo cloud keys entered (local-only mode).")
+    if not new_keys:
+        print("\nNo cloud keys entered (existing secrets unchanged).")
         return
 
     if dry_run:
-        print(f"[DRY-RUN] Would write {len(entries)} keys -> {secrets_path}")
+        print(f"[DRY-RUN] Would merge {len(new_keys)} keys -> {secrets_path}")
         return
 
+    merged = _parse_existing_secrets(secrets_path)
+    merged.update(new_keys)
+    lines = [f"export {k}={json.dumps(v)}" for k, v in merged.items()]
+
     secrets_path.parent.mkdir(parents=True, exist_ok=True)
-    secrets_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+    if secrets_path.exists():
+        shutil.copy2(secrets_path, secrets_path.with_suffix(".env.bak"))
     if platform.system() != "Windows":
+        fd = os.open(str(secrets_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
         os.chmod(secrets_path, 0o600)
-    print(f"\nSaved {len(entries)} keys -> {secrets_path}")
+    else:
+        secrets_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print(f"\nSaved {len(merged)} keys -> {secrets_path}")
     print("Note: local_bridge.py loads secrets.env automatically on all OSes.")
     if platform.system() != "Windows":
         print(f"Optional for shell tools: add `source {secrets_path}` to ~/.zshrc or ~/.bashrc")

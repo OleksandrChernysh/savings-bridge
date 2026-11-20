@@ -20,6 +20,7 @@ import subprocess
 import sys
 
 from bridge_backends import (
+    BackendError,
     DEFAULT_CODER_MODEL,
     DEFAULT_PARSER_MODEL,
     LOCK_PATH,
@@ -36,7 +37,7 @@ from bridge_backends import (
     query_opencode,
     resolve_model,
 )
-from bridge_common import SECRETS_ENV_PATH, STATS_LOG_PATH
+from bridge_common import SECRETS_ENV_PATH, STATS_LOG_PATH, mark_last_usage_outcome
 from bridge_guards import (
     CLOUD_FREE_DEFAULT_LIMITS,
     DEFAULT_SYSTEM_PROMPT,
@@ -53,10 +54,42 @@ from bridge_guards import (
     detect_truncation_or_placeholders,
     find_project_root,
     get_language_profile,
+    get_tsc_baseline,
     resolve_local_imports,
     run_verify,
     strip_markdown_code,
 )
+
+def _rollback_target(target_file: str, had_target: bool, orig_bytes: bytes | None, save_failed: bool = True) -> None:
+    """Save failed output to .failed.tmp (if requested) and restore original file bytes."""
+    mark_last_usage_outcome("rolled_back")
+    if save_failed and os.path.exists(target_file):
+        failed_tmp = f"{target_file}.failed.tmp"
+        try:
+            with open(target_file, "rb") as src, open(failed_tmp, "wb") as dst:
+                dst.write(src.read())
+        except OSError:
+            pass
+    if had_target and orig_bytes is not None:
+        with open(target_file, "wb") as dst:
+            dst.write(orig_bytes)
+    elif not had_target and os.path.exists(target_file):
+        os.remove(target_file)
+
+
+def _append_snippet(target_file: str, orig_bytes: bytes, snippet: str) -> None:
+    """Append snippet preserving original file bytes and line endings."""
+    sep = ""
+    if orig_bytes:
+        if orig_bytes.endswith(b"\n\n") or orig_bytes.endswith(b"\r\n\r\n"):
+            sep = ""
+        elif orig_bytes.endswith(b"\n"):
+            sep = "\n"
+        else:
+            sep = "\n\n"
+    with open(target_file, "a", encoding="utf-8", newline="") as f:
+        f.write(f"{sep}{snippet}")
+
 
 def handle_code(args):
     prompt_parts = []
@@ -64,19 +97,34 @@ def handle_code(args):
     context_contents: list[str] = []
     context_blocks: list[str] = []
     included_abs: set[str] = set()
+    target_file = args.out or args.file
+
+    if args.out and os.path.exists(args.out) and not args.force and not args.dry_run and not args.append:
+        print(
+            f"Refused to overwrite existing -o target {args.out} without --force.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     if args.file and os.path.exists(args.file):
         included_abs.add(os.path.abspath(args.file))
-        with open(args.file, "r", encoding="utf-8") as f:
+        with open(args.file, "r", encoding="utf-8", newline="") as f:
             existing = f.read()
         label = "Existing file to append to" if args.append else "Existing file content"
         prompt_parts.append(f"{label} ({args.file}):\n```\n{existing}\n```")
+
+    target_existing = existing
+    if target_file and target_file != args.file and os.path.exists(target_file):
+        with open(target_file, "r", encoding="utf-8", newline="") as f:
+            target_existing = f.read()
+    elif target_file != args.file:
+        target_existing = ""
 
     if args.context:
         for ctx_file in args.context:
             if os.path.exists(ctx_file):
                 included_abs.add(os.path.abspath(ctx_file))
-                with open(ctx_file, "r", encoding="utf-8") as f:
+                with open(ctx_file, "r", encoding="utf-8", newline="") as f:
                     ctx_text = f.read()
                     context_contents.append(ctx_text)
                     block = f"Context from {ctx_file}:\n```\n{ctx_text}\n```"
@@ -125,8 +173,7 @@ def handle_code(args):
             "No conversational filler, no markdown explanations before or after."
         )
 
-    target_file = args.out or args.file
-    system_prompt, _ = get_language_profile(target_file)
+    system_prompt, check_kind = get_language_profile(target_file)
 
     full_prompt = "\n\n".join(prompt_parts)
 
@@ -139,16 +186,21 @@ def handle_code(args):
         timeout=args.timeout,
     )
     clean_code = strip_markdown_code(raw_code)
+    if not clean_code.strip():
+        mark_last_usage_outcome("refused")
+        print("Refused to write: model returned empty output.", file=sys.stderr)
+        sys.exit(2)
 
     if args.dry_run or not target_file:
         sys.stdout.write(clean_code)
         return
 
-    if not args.append and existing and not args.force:
-        guard_reason = detect_truncation_or_placeholders(existing, clean_code)
+    if not args.append and target_existing and not args.force:
+        guard_reason = detect_truncation_or_placeholders(target_existing, clean_code)
         if guard_reason:
+            mark_last_usage_outcome("refused")
             tmp_path = f"{target_file}.local.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8", newline="") as f:
                 f.write(clean_code)
             print(
                 f"Refused to overwrite {target_file}: {guard_reason}. "
@@ -158,43 +210,72 @@ def handle_code(args):
             sys.exit(2)
 
     had_target = os.path.exists(target_file)
-    orig_target = ""
+    orig_bytes: bytes | None = None
     if had_target:
-        with open(target_file, "r", encoding="utf-8") as f:
-            orig_target = f.read()
+        with open(target_file, "rb") as f:
+            orig_bytes = f.read()
+
+    baseline_tsc = get_tsc_baseline(target_file) if (args.tsc or (args.check and check_kind == "ts")) else set()
 
     os.makedirs(os.path.dirname(os.path.abspath(target_file)), exist_ok=True)
-    if args.append and had_target:
-        current = orig_target.rstrip()
-        combined = f"{current}\n\n{clean_code}" if current else clean_code
-        with open(target_file, "w", encoding="utf-8") as f:
-            f.write(combined)
+    current_snippet = clean_code
+    if args.append and had_target and orig_bytes is not None:
+        _append_snippet(target_file, orig_bytes, current_snippet)
         print(f"Appended generated code to: {target_file}")
     else:
-        with open(target_file, "w", encoding="utf-8") as f:
+        with open(target_file, "w", encoding="utf-8", newline="") as f:
             f.write(clean_code)
         print(f"Saved generated code to: {target_file}")
 
-    if args.tsc or args.check or args.verify:
-        rc, err_out = run_verify(args.verify, args.tsc, target_file, check=args.check)
+    if not (args.tsc or args.check or args.verify):
+        return
+
+    no_rollback = getattr(args, "no_rollback", False)
+    try:
+        rc, err_out = run_verify(args.verify, args.tsc, target_file, check=args.check, baseline_tsc=baseline_tsc)
         retries_left = args.retries
         ctx_section = ("\n\n".join(context_blocks)[:16000] + "\n\n") if context_blocks else ""
         while rc != 0 and retries_left > 0:
             retries_left -= 1
-            repair_model = DEFAULT_CODER_MODEL if model == DEFAULT_PARSER_MODEL else model
+            if (args.model or "").strip().lower() in ("fast", "7b", "text", "parser"):
+                try:
+                    repair_model = resolve_model("coder", DEFAULT_CODER_MODEL, raise_on_error=True)
+                except BackendError:
+                    repair_model = model
+            else:
+                repair_model = model
             print(
-                f"Auto-repairing locally with {repair_model} (retries left: {retries_left})...",
+                f"Auto-repairing with {repair_model} (retries left: {retries_left})...",
                 file=sys.stderr,
             )
-            with open(target_file, "r", encoding="utf-8") as f:
-                broken_content = f.read()
-            repair_prompt = (
-                f"Original task:\n{args.prompt}\n\n"
-                f"{ctx_section}"
-                f"Current file content ({target_file}):\n```\n{broken_content}\n```\n\n"
-                f"Verification errors:\n{err_out[:4000]}\n\n"
-                "Fix all errors and output ONLY the complete corrected raw code for the file."
-            )
+            if args.append and had_target and orig_bytes is not None:
+                repair_prompt = (
+                    f"Original task:\n{args.prompt}\n\n"
+                    f"{ctx_section}"
+                    f"Appended snippet ({target_file}):\n```\n{current_snippet}\n```\n\n"
+                    f"Verification errors:\n{err_out[:4000]}\n\n"
+                    "Fix all errors and output ONLY the corrected snippet to append (do NOT repeat the existing file)."
+                )
+            else:
+                with open(target_file, "r", encoding="utf-8", newline="") as f:
+                    broken_content = f.read()
+                repair_prompt = (
+                    f"Original task:\n{args.prompt}\n\n"
+                    f"{ctx_section}"
+                    f"Current file content ({target_file}):\n```\n{broken_content}\n```\n\n"
+                    f"Verification errors:\n{err_out[:4000]}\n\n"
+                    "Fix all errors and output ONLY the complete corrected raw code for the file."
+                )
+            if repair_model.startswith(FREE_CLOUD_PREFIXES):
+                repair_secret_err = detect_secrets([], [repair_prompt])
+                if repair_secret_err:
+                    print(
+                        f"Security block (exit 3) during repair: {repair_secret_err}.",
+                        file=sys.stderr,
+                    )
+                    if not no_rollback:
+                        _rollback_target(target_file, had_target, orig_bytes, save_failed=True)
+                    sys.exit(3)
             repaired_raw = query_backend(
                 command="code-repair",
                 model=repair_model,
@@ -202,45 +283,70 @@ def handle_code(args):
                 system=system_prompt,
                 num_ctx=args.num_ctx,
                 timeout=args.timeout,
+                raise_on_error=True,
             )
             repaired_clean = strip_markdown_code(repaired_raw)
-            with open(target_file, "w", encoding="utf-8") as f:
-                f.write(repaired_clean)
-            rc, err_out = run_verify(args.verify, args.tsc, target_file, check=args.check)
-        if rc != 0:
-            if not getattr(args, "no_rollback", False):
-                failed_tmp = f"{target_file}.failed.tmp"
-                with open(target_file, "r", encoding="utf-8") as f:
-                    failed_content = f.read()
-                with open(failed_tmp, "w", encoding="utf-8") as f:
-                    f.write(failed_content)
-                if had_target:
-                    with open(target_file, "w", encoding="utf-8") as f:
-                        f.write(orig_target)
-                elif os.path.exists(target_file):
-                    os.remove(target_file)
-                print(
-                    f"Verification failed after retries; rolled back {target_file} (failed output saved to {failed_tmp}).",
-                    file=sys.stderr,
-                )
-            sys.exit(rc)
+            if not repaired_clean.strip():
+                print("Repair failed: model returned empty output.", file=sys.stderr)
+                rc = 1
+                break
+            if args.append and had_target and orig_bytes is not None:
+                current_snippet = repaired_clean
+                with open(target_file, "wb") as f:
+                    f.write(orig_bytes)
+                _append_snippet(target_file, orig_bytes, current_snippet)
+            else:
+                if target_existing and not args.force:
+                    guard_reason = detect_truncation_or_placeholders(target_existing, repaired_clean)
+                    if guard_reason:
+                        print(f"Repair refused: {guard_reason}.", file=sys.stderr)
+                        rc = 2
+                        break
+                with open(target_file, "w", encoding="utf-8", newline="") as f:
+                    f.write(repaired_clean)
+            rc, err_out = run_verify(args.verify, args.tsc, target_file, check=args.check, baseline_tsc=baseline_tsc)
+    except BackendError as exc:
+        print(f"Repair backend error: {exc}", file=sys.stderr)
+        if not no_rollback:
+            _rollback_target(target_file, had_target, orig_bytes, save_failed=True)
+        sys.exit(1)
+    except BaseException:
+        if not no_rollback:
+            _rollback_target(target_file, had_target, orig_bytes, save_failed=True)
+        raise
+
+    if rc != 0:
+        if not no_rollback:
+            _rollback_target(target_file, had_target, orig_bytes, save_failed=True)
+            print(
+                f"Verification failed after retries; rolled back {target_file} (failed output saved to {target_file}.failed.tmp).",
+                file=sys.stderr,
+            )
+        sys.exit(rc)
 
 
 def handle_git_commit(args):
-    diff_proc = subprocess.run(["git", "diff", "--cached"], capture_output=True, text=True)
+    diff_proc = subprocess.run(
+        ["git", "diff", "--cached"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     diff = diff_proc.stdout.strip()
 
     if not diff:
-        diff_proc = subprocess.run(["git", "diff", "HEAD~1"], capture_output=True, text=True)
-        diff = diff_proc.stdout.strip()
-
-    if not diff:
-        diff_proc = subprocess.run(["git", "diff"], capture_output=True, text=True)
-        diff = diff_proc.stdout.strip()
-
-    if not diff:
-        print("No git diff detected to summarize.", file=sys.stderr)
+        print("No staged changes. Stage changes with 'git add' first.", file=sys.stderr)
         sys.exit(1)
+
+    names_proc = subprocess.run(
+        ["git", "diff", "--name-only", "--cached"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    staged_files = [ln.strip() for ln in names_proc.stdout.splitlines() if ln.strip()]
 
     if len(diff) > 20000:
         diff = diff[:20000] + "\n\n...[diff truncated for length]..."
@@ -254,7 +360,16 @@ def handle_git_commit(args):
     )
 
     model = resolve_model(args.model, DEFAULT_PARSER_MODEL)
-    commit_msg = query_ollama(
+    if model.startswith(FREE_CLOUD_PREFIXES):
+        secret_err = detect_secrets(staged_files, [diff])
+        if secret_err:
+            print(
+                f"Security block (exit 3): {secret_err}. Use local Ollama (-m fast / -m coder) instead.",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+
+    commit_msg = query_backend(
         command="git-commit", model=model, prompt=prompt, num_ctx=8192, temperature=0.1, timeout=args.timeout
     )
     commit_msg = commit_msg.strip("`'\"\n ")
@@ -276,6 +391,8 @@ def handle_git_changelog(args):
         ["git", "log", git_range, "--pretty=format:%h - %s (%an)"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     commits = log_proc.stdout.strip()
 
@@ -292,12 +409,18 @@ def handle_git_changelog(args):
     )
 
     model = resolve_model(args.model, DEFAULT_PARSER_MODEL)
-    changelog = query_ollama(
+    if model.startswith(FREE_CLOUD_PREFIXES):
+        secret_err = detect_secrets([], [commits])
+        if secret_err:
+            print(f"Security block (exit 3): {secret_err}. Use local Ollama instead.", file=sys.stderr)
+            sys.exit(3)
+
+    changelog = query_backend(
         command="git-changelog", model=model, prompt=prompt, num_ctx=8192, temperature=0.2, timeout=args.timeout
     )
 
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(args.out, "w", encoding="utf-8", newline="") as f:
             f.write(changelog + "\n")
         print(f"Saved changelog to: {args.out}")
     else:
@@ -306,7 +429,7 @@ def handle_git_changelog(args):
 
 def handle_parse_json(args):
     if args.input and os.path.exists(args.input):
-        with open(args.input, "r", encoding="utf-8") as f:
+        with open(args.input, "r", encoding="utf-8", newline="") as f:
             raw_text = f.read()
     elif args.text:
         raw_text = args.text
@@ -315,7 +438,7 @@ def handle_parse_json(args):
 
     if args.schema:
         if os.path.exists(args.schema):
-            with open(args.schema, "r", encoding="utf-8") as f:
+            with open(args.schema, "r", encoding="utf-8", newline="") as f:
                 schema_obj = json.load(f)
         else:
             schema_obj = json.loads(args.schema)
@@ -334,7 +457,14 @@ def handle_parse_json(args):
     )
 
     model = resolve_model(args.model, DEFAULT_PARSER_MODEL)
-    result = query_ollama(
+    if model.startswith(FREE_CLOUD_PREFIXES):
+        checked = [p for p in (args.input, args.schema if args.schema and os.path.exists(args.schema) else None) if p]
+        secret_err = detect_secrets(checked, [raw_text, args.instruction or ""])
+        if secret_err:
+            print(f"Security block (exit 3): {secret_err}. Use local Ollama instead.", file=sys.stderr)
+            sys.exit(3)
+
+    result = query_backend(
         command="parse-json",
         model=model,
         prompt=prompt,
@@ -348,7 +478,7 @@ def handle_parse_json(args):
     clean_json = strip_markdown_code(result)
 
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(args.out, "w", encoding="utf-8", newline="") as f:
             f.write(clean_json)
         print(f"Saved parsed JSON to: {args.out}")
     else:
@@ -356,8 +486,10 @@ def handle_parse_json(args):
 
 
 def handle_review(args):
-    model = resolve_model(args.model, MODEL_ALIASES["pickle"])
-    file_paths = args.file or []
+    default_review_model = MODEL_ALIASES["pickle"] if getattr(args, "allow_cloud", False) else DEFAULT_PARSER_MODEL
+    model = resolve_model(args.model, default_review_model)
+    file_paths = list(args.file or [])
+    checked_paths = list(file_paths)
     parts = []
 
     if file_paths:
@@ -365,7 +497,7 @@ def handle_review(args):
             if not os.path.exists(path):
                 print(f"Review target file not found: {path}", file=sys.stderr)
                 sys.exit(1)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8", newline="") as f:
                 parts.append(f"--- FILE: {path} ---\n{f.read()}")
 
     if not file_paths or args.diff:
@@ -374,12 +506,24 @@ def handle_review(args):
             ["git", "diff", diff_target],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         diff_text = diff_proc.stdout.strip()
+        names_cmd = ["git", "diff", "--name-only", diff_target]
         if not diff_text and not args.diff:
-            diff_proc = subprocess.run(["git", "diff", "--cached"], capture_output=True, text=True)
+            diff_proc = subprocess.run(
+                ["git", "diff", "--cached"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
             diff_text = diff_proc.stdout.strip()
+            names_cmd = ["git", "diff", "--name-only", "--cached"]
         if diff_text:
+            names_proc = subprocess.run(names_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            checked_paths.extend([ln.strip() for ln in names_proc.stdout.splitlines() if ln.strip()])
             parts.append(f"--- GIT DIFF ({diff_target}) ---\n{diff_text}")
 
     if not parts:
@@ -390,7 +534,7 @@ def handle_review(args):
     focus = args.prompt or "Find bugs, edge cases, null/undefined issues, type coercion bugs, and security flaws."
 
     if model.startswith(FREE_CLOUD_PREFIXES):
-        secret_err = detect_secrets(file_paths, [focus, payload])
+        secret_err = detect_secrets(checked_paths, [focus, payload])
         if secret_err:
             print(f"SECURITY BLOCK ({secret_err}). Sensitive diffs must be reviewed in Primary Cloud model.", file=sys.stderr)
             sys.exit(3)
@@ -443,6 +587,11 @@ def handle_ask(args):
                 file=sys.stderr,
             )
             sys.exit(3)
+
+    scope_error = check_scope_limits(model, prompt_text, "", context_parts, append=False)
+    if scope_error:
+        print(f"Scope limit exceeded: {scope_error}", file=sys.stderr)
+        sys.exit(2)
 
     full_prompt = "\n\n".join(context_parts + [prompt_text]) if context_parts else prompt_text
     system_prompt = args.system or "You are a concise, helpful assistant. Answer directly without filler."
@@ -504,6 +653,12 @@ def _run_delegated(script_name: str, main_fn, extra_args: list[str]) -> None:
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     parser = argparse.ArgumentParser(
         prog="savings-bridge",
         description="Savings Bridge — unified CLI for local/free LLM offloading, token stats, and metrics",
@@ -516,7 +671,7 @@ def main():
     p_code.add_argument("--file", "-f", help="Target file to implement / edit")
     p_code.add_argument("--out", "-o", help="Output file path (defaults to --file)")
     p_code.add_argument("--context", "-c", action="append", help="Additional context file(s)")
-    p_code.add_argument("--model", "-m", default=DEFAULT_CODER_MODEL, help=f"Model name or alias 7b/14b/free/pickle/glm-free/nim (default: {DEFAULT_CODER_MODEL})")
+    p_code.add_argument("--model", "-m", default=None, help="Model name or alias fast/coder/free/pickle/glm-free/nim (default: dynamic local coder)")
     p_code.add_argument("--num-ctx", type=int, default=16384, help="Context size (default: 16384)")
     p_code.add_argument("--timeout", type=int, default=300, help="Request timeout in seconds (default: 300)")
     p_code.add_argument("--append", action="store_true", help="Append generated snippet to target file instead of overwriting")
@@ -534,7 +689,7 @@ def main():
     # Subcommand: git-commit
     p_commit = subparsers.add_parser("git-commit", help="Generate conventional commit message from git diff")
     p_commit.add_argument("--apply", "-a", action="store_true", help="Automatically run git commit with generated message")
-    p_commit.add_argument("--model", "-m", default=DEFAULT_PARSER_MODEL, help=f"Model name or alias (default: {DEFAULT_PARSER_MODEL})")
+    p_commit.add_argument("--model", "-m", default=None, help="Model name or alias (default: dynamic local fast)")
     p_commit.add_argument("--timeout", type=int, default=180, help="Request timeout in seconds (default: 180)")
     p_commit.set_defaults(func=handle_git_commit)
 
@@ -542,7 +697,7 @@ def main():
     p_changelog = subparsers.add_parser("git-changelog", help="Generate changelog / release notes from git log")
     p_changelog.add_argument("--range", "-r", help="Git revision range (e.g. HEAD~15..HEAD)")
     p_changelog.add_argument("--out", "-o", help="Output markdown file")
-    p_changelog.add_argument("--model", "-m", default=DEFAULT_PARSER_MODEL, help=f"Model name or alias (default: {DEFAULT_PARSER_MODEL})")
+    p_changelog.add_argument("--model", "-m", default=None, help="Model name or alias (default: dynamic local fast)")
     p_changelog.add_argument("--timeout", type=int, default=180, help="Request timeout in seconds (default: 180)")
     p_changelog.set_defaults(func=handle_git_changelog)
 
@@ -553,7 +708,7 @@ def main():
     p_parse.add_argument("--instruction", help="Custom extraction instruction")
     p_parse.add_argument("--schema", "-s", help="Path to JSON Schema file or JSON schema string")
     p_parse.add_argument("--out", "-o", help="Output JSON file")
-    p_parse.add_argument("--model", "-m", default=DEFAULT_PARSER_MODEL, help=f"Model name or alias (default: {DEFAULT_PARSER_MODEL})")
+    p_parse.add_argument("--model", "-m", default=None, help="Model name or alias (default: dynamic local fast)")
     p_parse.add_argument("--num-ctx", type=int, default=8192, help="Context size (default: 8192)")
     p_parse.add_argument("--timeout", type=int, default=180, help="Request timeout in seconds (default: 180)")
     p_parse.set_defaults(func=handle_parse_json)
@@ -563,7 +718,8 @@ def main():
     p_review.add_argument("--diff", "-d", help="Git diff target/range (default: HEAD)")
     p_review.add_argument("--file", "-f", action="append", help="Specific file(s) to review")
     p_review.add_argument("--prompt", "-p", help="Custom review focus")
-    p_review.add_argument("--model", "-m", default="pickle", help="Model name or alias (default: pickle; sensitive diffs must be reviewed in Primary Cloud model)")
+    p_review.add_argument("--model", "-m", default=None, help="Model name or alias (default: local fast; use -m pickle or --allow-cloud for free cloud)")
+    p_review.add_argument("--allow-cloud", action="store_true", help="Allow default free cloud model (pickle) for review")
     p_review.add_argument("--timeout", type=int, default=180, help="Request timeout in seconds (default: 180)")
     p_review.set_defaults(func=handle_review)
 
